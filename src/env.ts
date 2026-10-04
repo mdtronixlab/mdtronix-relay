@@ -17,6 +17,11 @@ export interface Env {
   DEV_LOGIN?: string;
   /** Secret: bearer token for the operator API (/v1/admin/subscription). Set with `wrangler secret put ADMIN_TOKEN`. */
   ADMIN_TOKEN: string;
+  /** Voice platform client IDs and secrets (set when the platform consoles are configured). */
+  GOOGLE_VOICE_CLIENT_ID?: string;
+  GOOGLE_VOICE_CLIENT_SECRET?: string;
+  ALEXA_CLIENT_ID?: string;
+  ALEXA_CLIENT_SECRET?: string;
   /** Rate-limit bindings, declared in wrangler.jsonc. */
   RL_DEVICE: RateLimit;
   RL_APPROVE: RateLimit;

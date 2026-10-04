@@ -9,6 +9,7 @@ import { finishSignIn, startSignIn } from './google';
 import type { Env } from './env';
 import { jsonError } from './http';
 import { handleAdminHomes, handleAdminSubscription } from './admin';
+import { authorizeGet, authorizePost, revokeEndpoint, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
 import { approveDevice, devLogin, linkPage } from './web';
 
@@ -27,6 +28,12 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   // Operator
   if (pathname === '/v1/admin/subscription' && method === 'POST') return handleAdminSubscription(request, env);
   if (pathname === '/v1/admin/homes' && method === 'GET') return handleAdminHomes(request, env);
+
+  // Voice account linking (Google Home, Alexa)
+  if (pathname === '/oauth/authorize' && method === 'GET') return authorizeGet(request, env);
+  if (pathname === '/oauth/authorize' && method === 'POST') return authorizePost(request, env);
+  if (pathname === '/oauth/token' && method === 'POST') return tokenEndpoint(request, env);
+  if (pathname === '/oauth/revoke' && method === 'POST') return revokeEndpoint(request, env);
 
   // Tunnel
   if (pathname === '/v1/tunnel' && method === 'GET') return attachTunnel(request, env);

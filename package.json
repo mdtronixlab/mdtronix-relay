@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/tunnel.test.mjs",
+    "test": "node --test tests/tunnel.test.mjs tests/oauth.test.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply mdtronix-customers --local",
     "d1:migrate:remote": "wrangler d1 migrations apply mdtronix-customers --remote"
   },
