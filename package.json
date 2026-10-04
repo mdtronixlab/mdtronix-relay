@@ -1,0 +1,20 @@
+{
+  "name": "mdtronix-relay",
+  "private": true,
+  "version": "0.0.0",
+  "description": "MDtronix remote access relay: login API, HA tunnel, and voice OAuth (later).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/tunnel.test.mjs",
+    "d1:migrate:local": "wrangler d1 migrations apply mdtronix-customers --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply mdtronix-customers --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261003.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.147.0",
+    "ws": "^8.22.0"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mdtronix-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "routes": [
+    { "pattern": "relay.mdtronix.online", "custom_domain": true },
+    { "pattern": "*.mdtronix.online/*", "zone_name": "mdtronix.online" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "TUNNEL", "class_name": "TunnelDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TunnelDO"] }
+  ],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://relay.mdtronix.online",
+    "TUNNEL_PUBLIC_HOST": "relay.mdtronix.online",
+    "INSTANCE_DOMAIN": "mdtronix.online",
+    "GOOGLE_CLIENT_ID": "67696384050-m4dlp3ic6ru0o81bbf3gbcc9skbh1iuo.apps.googleusercontent.com",
+    // Secrets, set at deploy with `wrangler secret put`: GOOGLE_CLIENT_SECRET, SESSION_SECRET.
+    // DEV_LOGIN is never set here. It exists only in the local .dev.vars file.
+  },
+  // Rate limits. Period is 60 seconds, the longest the binding supports for this setup. Keys are IPs or device codes.
+  "ratelimits": [
+    { "name": "RL_DEVICE", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "RL_APPROVE", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+    { "name": "RL_POLL", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_LOGIN", "namespace_id": "1004", "simple": { "limit": 20, "period": 60 } }
+  ],
+  "d1_databases": [
+    {
+      "binding": "CUSTOMERS",
+      "database_name": "mdtronix-customers",
+      "database_id": "c5c1221a-61a8-4a92-8fc2-e7c1dba4a80d"
+    }
+  ]
+  // Account: the same Cloudflare account as mdtronix-portal (see docs/remote-access/PHASE0.md).
+  // Plan: Workers Paid, for Durable Object WebSocket volume.
+}
