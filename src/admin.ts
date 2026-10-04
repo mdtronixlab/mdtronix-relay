@@ -69,5 +69,16 @@ export async function handleAdminSubscription(request: Request, env: Env): Promi
   }
 
   if (result.meta.changes !== 1) return jsonError(404, 'not_found');
+
+  // Clear the cached access decision in the home's tunnel object, so the change applies at once.
+  const home = await env.CUSTOMERS.prepare(
+    'SELECT i.subdomain FROM instances i JOIN customers c ON c.id = i.customer_id WHERE c.email = ?',
+  )
+    .bind(email)
+    .first<{ subdomain: string }>();
+  if (home) {
+    const stub = env.TUNNEL.get(env.TUNNEL.idFromName(home.subdomain));
+    await stub.fetch('https://do.internal/__invalidate', { method: 'POST' });
+  }
   return json(200, { ok: true });
 }

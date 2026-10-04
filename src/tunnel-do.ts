@@ -10,7 +10,7 @@
 // Durable Object in memory. Browser WebSockets are accepted normally, and stay in memory
 // while open. In-flight streams live in memory, and an in-flight request keeps the object awake.
 
-import { instanceHasAccess } from './billing';
+import { accessStateFor, type AccessState } from './billing';
 import type { Env } from './env';
 import {
   decodeData,
@@ -50,6 +50,8 @@ interface WsStream {
 type Stream = HttpStream | WsStream;
 
 const HA_TAG = 'ha';
+// How long an access decision is reused before the database is asked again. Suspensions also clear it at once.
+const ACCESS_CACHE_MS = 60 * 1000;
 // Re-check the subscription this often while the tunnel is up, so a suspension takes effect within minutes.
 const ACCESS_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const TEXT_DECODER = new TextDecoder();
@@ -57,6 +59,7 @@ const TEXT_ENCODER = new TextEncoder();
 
 export class TunnelDO {
   private streams = new Map<number, Stream>();
+  private accessCache: { at: number; state: AccessState } | undefined;
   private nextId = 1;
 
   constructor(
@@ -69,7 +72,16 @@ export class TunnelDO {
 
     if (url.pathname === '/__attach') return this.attach(request);
     if (url.pathname === '/__close') return this.closeTunnel('revoked');
+    if (url.pathname === '/__invalidate') {
+      this.accessCache = undefined;
+      return new Response('ok');
+    }
     if (url.pathname.startsWith('/__proxy')) {
+      const state = await this.accessFor(request.headers.get('x-mdt-instance') ?? '');
+      if (state === 'missing') return new Response('Not found', { status: 404 });
+      if (state === 'inactive') {
+        return new Response('Remote access is not active for this home.', { status: 402 });
+      }
       const path = url.pathname.slice('/__proxy'.length) || '/';
       return this.proxy(request, path, url.search);
     }
@@ -77,6 +89,15 @@ export class TunnelDO {
   }
 
   // HA side ----------------------------------------------------------------
+
+  /** Access for this home, reused from memory for a minute. The database is asked only when the cache is stale. */
+  private async accessFor(subdomain: string): Promise<AccessState> {
+    const now = Date.now();
+    if (this.accessCache && now - this.accessCache.at < ACCESS_CACHE_MS) return this.accessCache.state;
+    const state = await accessStateFor(this.env.CUSTOMERS, subdomain, Math.floor(now / 1000));
+    this.accessCache = { at: now, state };
+    return state;
+  }
 
   private haSocket(): WebSocket | null {
     return this.state.getWebSockets(HA_TAG)[0] ?? null;
@@ -237,7 +258,7 @@ export class TunnelDO {
     const lastAccessCheckAt = (await this.state.storage.get<number>('lastAccessCheckAt')) ?? 0;
     if (now - lastAccessCheckAt > ACCESS_CHECK_INTERVAL_MS) {
       const instance = (await this.state.storage.get<string>('instance')) ?? '';
-      if (!(await instanceHasAccess(this.env.CUSTOMERS, instance))) {
+      if ((await accessStateFor(this.env.CUSTOMERS, instance, Math.floor(now / 1000))) !== 'ok') {
         ha.close(4003, 'subscription inactive');
         return;
       }

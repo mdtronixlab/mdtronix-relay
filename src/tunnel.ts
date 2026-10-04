@@ -79,19 +79,10 @@ export async function unlink(request: Request, env: Env): Promise<Response> {
 
 /** Public traffic to <subdomain>.<INSTANCE_DOMAIN>, forwarded to Home Assistant over its tunnel. */
 export async function proxyToInstance(request: Request, env: Env, subdomain: string): Promise<Response> {
-  const row = await env.CUSTOMERS.prepare(
-    `SELECT i.subdomain FROM instances i
-     JOIN customers c ON c.id = i.customer_id
-     WHERE i.subdomain = ? AND c.status = 'active'`,
-  )
-    .bind(subdomain)
-    .first<{ subdomain: string }>();
-  if (!row) return new Response('Not found', { status: 404 });
-  if (!(await instanceHasAccess(env.CUSTOMERS, subdomain))) {
-    return new Response('Remote access is not active for this home.', { status: 402 });
-  }
-
+  // Access is checked inside the tunnel object, where it is cached, so this path makes no database query.
   const url = new URL(request.url);
   const stub = env.TUNNEL.get(env.TUNNEL.idFromName(subdomain));
-  return stub.fetch(new Request(`https://do.internal/__proxy${url.pathname}${url.search}`, request));
+  const forwarded = new Request(`https://do.internal/__proxy${url.pathname}${url.search}`, request);
+  forwarded.headers.set('x-mdt-instance', subdomain);
+  return stub.fetch(forwarded);
 }

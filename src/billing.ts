@@ -33,6 +33,28 @@ export function startTrialStatement(db: D1Database, customerId: string, now: num
     .bind(customerId, now + TRIAL_SECONDS, now);
 }
 
+export type AccessState = 'ok' | 'missing' | 'inactive';
+
+/**
+ * Access for the home with this subdomain, from one query covering the instance, its account, and its
+ * subscription. Public requests use this through the tunnel object's cache, so it is not a per-request query.
+ */
+export async function accessStateFor(db: D1Database, subdomain: string, now: number): Promise<AccessState> {
+  const row = await db
+    .prepare(
+      `SELECT c.status AS account_status, s.status, s.trial_ends_at, s.current_period_end
+       FROM instances i
+       JOIN customers c ON c.id = i.customer_id
+       LEFT JOIN subscriptions s ON s.customer_id = c.id
+       WHERE i.subdomain = ?`,
+    )
+    .bind(subdomain)
+    .first<SubscriptionRow & { account_status: string }>();
+  if (!row) return 'missing';
+  if (row.account_status !== 'active') return 'inactive';
+  return allowsAccess(row, now) ? 'ok' : 'inactive';
+}
+
 /** Whether the home with this subdomain currently has access. */
 export async function instanceHasAccess(db: D1Database, subdomain: string, now = nowSeconds()): Promise<boolean> {
   const row = await db
