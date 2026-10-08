@@ -4,6 +4,7 @@
 //   { "email": "...", "action": "activate", "paid_until": <unix seconds> }
 //   { "email": "...", "action": "suspend" }
 
+import { approveEmail, listApprovedEmails, revokeApprovedEmail } from './approval';
 import { constantTimeEqual, nowSeconds } from './crypto';
 import type { Env } from './env';
 import { json, jsonError } from './http';
@@ -81,4 +82,40 @@ export async function handleAdminSubscription(request: Request, env: Env): Promi
     await stub.fetch('https://do.internal/__invalidate', { method: 'POST' });
   }
   return json(200, { ok: true });
+}
+
+/** GET /v1/admin/approved-emails. The current allowlist, newest first. */
+export async function handleListApprovedEmails(request: Request, env: Env): Promise<Response> {
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
+  return json(200, { emails: await listApprovedEmails(env.CUSTOMERS) });
+}
+
+/**
+ * POST /v1/admin/approved-emails
+ * { "email": "...", "action": "approve", "note": "..." }   note is optional
+ * { "email": "...", "action": "revoke" }
+ */
+export async function handleSetApprovedEmail(request: Request, env: Env): Promise<Response> {
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
+
+  let body: { email?: unknown; action?: unknown; note?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError(400, 'invalid_json');
+  }
+  if (typeof body.email !== 'string' || !body.email.includes('@')) return jsonError(400, 'invalid_email');
+
+  if (body.action === 'approve') {
+    const note = typeof body.note === 'string' ? body.note : null;
+    await approveEmail(env.CUSTOMERS, body.email, note);
+    return json(200, { ok: true });
+  }
+  if (body.action === 'revoke') {
+    const removed = await revokeApprovedEmail(env.CUSTOMERS, body.email);
+    return json(removed ? 200 : 404, { ok: removed });
+  }
+  return jsonError(400, 'invalid_action');
 }

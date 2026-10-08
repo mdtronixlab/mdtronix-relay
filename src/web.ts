@@ -3,7 +3,8 @@
 
 import { nowSeconds, normalizeUserCode, randomId, randomToken, sha256Hex } from './crypto';
 import type { Env } from './env';
-import { esc, html, redirect, safeNext, SESSION_COOKIE, setCookie, clearCookie, readCookie } from './http';
+import { isApprovedEmail } from './approval';
+import { esc, html, redirect, safeNext, SESSION_COOKIE, setCookie, clearCookie, readCookie, json } from './http';
 import { checkLimit, clientKey } from './ratelimit';
 
 const SESSION_DAYS = 14;
@@ -159,4 +160,16 @@ export async function devLogin(request: Request, env: Env): Promise<Response> {
 
   const token = await createSession(env.CUSTOMERS, customer.id);
   return redirect(safeNext(new URL(request.url).searchParams.get('next')), [sessionCookie(token)]);
+}
+
+/**
+ * GET /v1/dev/approved?email=…. Reads the approval allowlist so tests can check it without going
+ * through Google sign-in. Dev login itself doesn't check this list, on purpose: it's a convenience
+ * for signing in test accounts, not something that should also need pre-approval in every test.
+ * Returns 404 unless DEV_LOGIN is "true", which is only set in the local .dev.vars file.
+ */
+export async function devApprovedCheck(request: Request, env: Env): Promise<Response> {
+  if (env.DEV_LOGIN !== 'true') return new Response('not found', { status: 404 });
+  const email = new URL(request.url).searchParams.get('email') ?? '';
+  return json(200, { approved: await isApprovedEmail(env.CUSTOMERS, email) });
 }

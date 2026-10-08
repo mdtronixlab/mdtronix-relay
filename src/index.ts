@@ -8,10 +8,10 @@ import { pollDeviceToken, createDeviceCode } from './device';
 import { finishSignIn, startSignIn } from './google';
 import type { Env } from './env';
 import { jsonError } from './http';
-import { handleAdminHomes, handleAdminSubscription } from './admin';
+import { handleAdminHomes, handleAdminSubscription, handleListApprovedEmails, handleSetApprovedEmail } from './admin';
 import { authorizeGet, authorizePost, revokeEndpoint, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
-import { approveDevice, devLogin, linkPage } from './web';
+import { approveDevice, devApprovedCheck, devLogin, linkPage } from './web';
 import { alexaDirective, googleFulfillment } from './voice';
 import { accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
 
@@ -37,6 +37,8 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   // Operator
   if (pathname === '/v1/admin/subscription' && method === 'POST') return handleAdminSubscription(request, env);
   if (pathname === '/v1/admin/homes' && method === 'GET') return handleAdminHomes(request, env);
+  if (pathname === '/v1/admin/approved-emails' && method === 'GET') return handleListApprovedEmails(request, env);
+  if (pathname === '/v1/admin/approved-emails' && method === 'POST') return handleSetApprovedEmail(request, env);
 
   // Voice account linking (Google Home, Alexa)
   if (pathname === '/oauth/authorize' && method === 'GET') return authorizeGet(request, env);
@@ -59,6 +61,7 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
 
   // Local development only. Returns 404 unless DEV_LOGIN is set.
   if (pathname === '/v1/dev/login' && method === 'GET') return devLogin(request, env);
+  if (pathname === '/v1/dev/approved' && method === 'GET') return devApprovedCheck(request, env);
 
   return new Response('not found', { status: 404 });
 }

@@ -3,7 +3,8 @@
 
 import { base64UrlToBytes, bytesToBase64Url, hmacSign, hmacVerify, nowSeconds, randomId, randomToken, sha256Base64Url } from './crypto';
 import type { Env } from './env';
-import { clearCookie, html, redirect, readCookie, safeNext, setCookie, STATE_COOKIE } from './http';
+import { clearCookie, esc, html, redirect, readCookie, safeNext, setCookie, STATE_COOKIE } from './http';
+import { isApprovedEmail } from './approval';
 import { createSession, sessionCookie } from './web';
 import { checkLimit, clientKey } from './ratelimit';
 
@@ -136,6 +137,17 @@ export async function finishSignIn(request: Request, env: Env): Promise<Response
     if (!tokens.id_token) return failure();
 
     const claims = await verifyIdToken(tokens.id_token, env.GOOGLE_CLIENT_ID, state.nonce);
+
+    // The repo this integration comes from is public, so this is what keeps a stranger who finds it
+    // from signing in and starting a free trial. Staff approve emails through the admin API.
+    if (!(await isApprovedEmail(env.CUSTOMERS, claims.email))) {
+      return html(
+        403,
+        `<!doctype html><meta charset="utf-8"><title>Not approved</title>
+<p>${esc(claims.email)} isn't approved for MDtronix Cloud yet. Contact MDtronix to get access.</p>`,
+        [clearCookie(STATE_COOKIE)],
+      );
+    }
 
     const now = nowSeconds();
     await env.CUSTOMERS.prepare(
