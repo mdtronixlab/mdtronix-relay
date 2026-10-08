@@ -10,16 +10,25 @@ export const RESPONSE_TIMEOUT_MS = 30_000;
 export const OP_TEXT = 0x01;
 export const OP_BINARY = 0x02;
 
+// Voice fulfillment (PROTOCOL.md section 2.5). Requests are small JSON documents, and Google and
+// Alexa expect an answer within a few seconds.
+export const VOICE_TIMEOUT_MS = 8_000;
+export const MAX_VOICE_REQUEST_BYTES = 64 * 1024;
+export const MAX_VOICE_REPLY_BYTES = 256 * 1024;
+export const VOICE_PLATFORMS = ['google', 'alexa'] as const;
+export type VoicePlatform = (typeof VOICE_PLATFORMS)[number];
+
 export type HeaderMap = Record<string, string | string[]>;
 
 /** Text frames sent by Home Assistant. */
 export type HaMessage =
-  | { t: 'hello'; v: number; ha_version?: string; client_version?: string }
+  | { t: 'hello'; v: number; ha_version?: string; client_version?: string; caps?: string[] }
   | { t: 'res'; id: number; status: number; headers: HeaderMap }
   | { t: 'end'; id: number }
   | { t: 'ws_accept'; id: number; protocol?: string }
   | { t: 'ws_close'; id: number; code?: number; reason?: string }
   | { t: 'reset'; id: number; reason?: string }
+  | { t: 'voice_res'; id: number; status: number; body: string }
   | { t: 'ping' }
   | { t: 'pong' };
 
@@ -31,6 +40,7 @@ export type RelayMessage =
   | { t: 'end'; id: number }
   | { t: 'ws_close'; id: number; code?: number; reason?: string }
   | { t: 'reset'; id: number; reason?: string }
+  | { t: 'voice'; id: number; platform: VoicePlatform; body: string }
   | { t: 'ping' }
   | { t: 'pong' };
 

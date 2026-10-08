@@ -3,7 +3,7 @@
 
 import { nowSeconds, normalizeUserCode, randomId, randomToken, sha256Hex } from './crypto';
 import type { Env } from './env';
-import { esc, html, redirect, safeNext, SESSION_COOKIE, setCookie, readCookie } from './http';
+import { esc, html, redirect, safeNext, SESSION_COOKIE, setCookie, clearCookie, readCookie } from './http';
 import { checkLimit, clientKey } from './ratelimit';
 
 const SESSION_DAYS = 14;
@@ -23,19 +23,31 @@ export function sessionCookie(token: string): string {
 }
 
 /** The signed-in active customer, or null. */
-export async function signedInCustomer(request: Request, db: D1Database): Promise<{ id: string } | null> {
+export async function signedInCustomer(request: Request, db: D1Database): Promise<{ id: string; email: string } | null> {
   const token = readCookie(request, SESSION_COOKIE);
   if (!token) return null;
   const row = await db
     .prepare(
-      `SELECT c.id, c.status FROM web_sessions s
+      `SELECT c.id, c.email, c.status FROM web_sessions s
        JOIN customers c ON c.id = s.customer_id
        WHERE s.token_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL`,
     )
     .bind(await sha256Hex(token), nowSeconds())
-    .first<{ id: string; status: string }>();
+    .first<{ id: string; email: string; status: string }>();
   if (!row || row.status !== 'active') return null;
-  return { id: row.id };
+  return { id: row.id, email: row.email };
+}
+
+/** Ends the browser's session: revokes the session row, so a copied cookie stops working too. */
+export async function signOut(request: Request, db: D1Database): Promise<string[]> {
+  const token = readCookie(request, SESSION_COOKIE);
+  if (token) {
+    await db
+      .prepare('UPDATE web_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL')
+      .bind(nowSeconds(), await sha256Hex(token))
+      .run();
+  }
+  return [clearCookie(SESSION_COOKIE)];
 }
 
 function signInRedirect(next: string): Response {

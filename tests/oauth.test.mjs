@@ -12,7 +12,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = 'https://relay.mdtronix.online';
 const CLIENT_ID = 'google-test-client';
 const CLIENT_SECRET = 'google-test-secret';
-const REDIRECT = 'https://oauth-redirect.googleusercontent.com/r/REPLACE_WITH_GOOGLE_PROJECT_ID';
+const REDIRECT = 'https://oauth-redirect.googleusercontent.com/r/mdtronix-ha-85262';
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 
 let dev;

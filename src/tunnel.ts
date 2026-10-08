@@ -9,7 +9,7 @@ import { instanceHasAccess } from './billing';
 
 const INSTANCE_LABEL = /^[a-z0-9]{10}$/;
 
-function bearer(request: Request): string | null {
+export function bearer(request: Request): string | null {
   const header = request.headers.get('authorization') ?? '';
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   return match ? match[1] : null;
@@ -75,6 +75,20 @@ export async function unlink(request: Request, env: Env): Promise<Response> {
     .run();
   await closeTunnel(env, instance);
   return json(200, { ok: true });
+}
+
+/** Disconnects this customer's Home Assistant from the account page. True if one was connected. */
+export async function unlinkForCustomer(env: Env, customerId: string): Promise<boolean> {
+  const instance = await env.CUSTOMERS.prepare('SELECT subdomain FROM instances WHERE customer_id = ?')
+    .bind(customerId)
+    .first<{ subdomain: string }>();
+  if (!instance) return false;
+
+  await env.CUSTOMERS.prepare('UPDATE tunnel_tokens SET revoked_at = ? WHERE instance = ? AND revoked_at IS NULL')
+    .bind(nowSeconds(), instance.subdomain)
+    .run();
+  await closeTunnel(env, instance.subdomain);
+  return true;
 }
 
 /** Public traffic to <subdomain>.<INSTANCE_DOMAIN>, forwarded to Home Assistant over its tunnel. */

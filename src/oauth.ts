@@ -287,7 +287,7 @@ export async function revokeEndpoint(request: Request, env: Env): Promise<Respon
 }
 
 /**
- * The customer behind an access token, for the voice fulfillment routes (not built yet).
+ * The customer behind an access token, for the voice fulfillment routes.
  * Null when the token is unknown, expired, revoked, or its account isn't active.
  */
 export async function customerForAccessToken(
@@ -304,4 +304,51 @@ export async function customerForAccessToken(
     .bind(await sha256Hex(token), nowSeconds())
     .first<{ customer_id: string; platform: Platform }>();
   return row ? { customerId: row.customer_id, platform: row.platform } : null;
+}
+
+/** Which voice platforms this customer currently has linked. Used by the account page. */
+export async function linkedPlatforms(db: D1Database, customerId: string): Promise<Record<Platform, boolean>> {
+  const rows = await db
+    .prepare('SELECT DISTINCT platform FROM oauth_grants WHERE customer_id = ? AND revoked_at IS NULL')
+    .bind(customerId)
+    .all<{ platform: Platform }>();
+  const linked: Record<Platform, boolean> = { google: false, alexa: false };
+  for (const row of rows.results ?? []) linked[row.platform] = true;
+  return linked;
+}
+
+/** Revokes this customer's grants for one platform. Used from the account page, not by the platform itself. */
+export async function revokeGrantsForCustomer(db: D1Database, customerId: string, platform: Platform): Promise<void> {
+  const now = nowSeconds();
+  await db
+    .prepare(
+      `UPDATE oauth_grants SET revoked_at = ?
+       WHERE customer_id = ? AND platform = ? AND revoked_at IS NULL`,
+    )
+    .bind(now, customerId, platform)
+    .run();
+  await db
+    .prepare(
+      `UPDATE oauth_access_tokens SET expires_at = ?
+       WHERE grant_id IN (SELECT id FROM oauth_grants WHERE customer_id = ? AND platform = ?)`,
+    )
+    .bind(now, customerId, platform)
+    .run();
+}
+
+/** Revokes the grant behind an access token. Used when the platform disconnects (Google's DISCONNECT intent). */
+export async function revokeGrantForAccessToken(db: D1Database, token: string): Promise<void> {
+  const hash = await sha256Hex(token);
+  const now = nowSeconds();
+  await db
+    .prepare(
+      `UPDATE oauth_grants SET revoked_at = ?
+       WHERE revoked_at IS NULL AND id IN (SELECT grant_id FROM oauth_access_tokens WHERE token_hash = ?)`,
+    )
+    .bind(now, hash)
+    .run();
+  await db
+    .prepare('UPDATE oauth_access_tokens SET expires_at = ? WHERE token_hash = ?')
+    .bind(now, hash)
+    .run();
 }

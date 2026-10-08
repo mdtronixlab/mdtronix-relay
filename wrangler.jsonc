@@ -20,7 +20,9 @@
     "TUNNEL_PUBLIC_HOST": "relay.mdtronix.online",
     "INSTANCE_DOMAIN": "mdtronix.online",
     "GOOGLE_CLIENT_ID": "67696384050-m4dlp3ic6ru0o81bbf3gbcc9skbh1iuo.apps.googleusercontent.com",
-    // Secrets, set at deploy with `wrangler secret put`: GOOGLE_CLIENT_SECRET, SESSION_SECRET.
+    // The Alexa account-linking client ID is public. It must match the value entered in the Alexa skill.
+    "ALEXA_CLIENT_ID": "mdtronix-alexa",
+    // Secrets, set at deploy with `wrangler secret put`: GOOGLE_CLIENT_SECRET, SESSION_SECRET, ALEXA_CLIENT_SECRET.
     // DEV_LOGIN is never set here. It exists only in the local .dev.vars file.
   },
   // Rate limits. Period is 60 seconds, the longest the binding supports for this setup. Keys are IPs or device codes.

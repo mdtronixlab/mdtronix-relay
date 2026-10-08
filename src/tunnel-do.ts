@@ -5,6 +5,7 @@
 //   /__attach  upgrade: Home Assistant connects its tunnel here
 //   /__close   POST: close the tunnel (token revoked or unlinked)
 //   /__proxy/* any path: forwarded to Home Assistant
+//   /__voice   POST {platform, body}: one voice request, answered by Home Assistant (section 2.5)
 //
 // The HA socket uses the WebSocket hibernation API, so an idle tunnel doesn't keep the
 // Durable Object in memory. Browser WebSockets are accepted normally, and stay in memory
@@ -12,12 +13,15 @@
 
 import { accessStateFor, type AccessState } from './billing';
 import type { Env } from './env';
+import { json } from './http';
 import {
   decodeData,
   encodeData,
   encodeWsMessage,
   MAX_REQUEST_BYTES,
   MAX_STREAMS,
+  MAX_VOICE_REPLY_BYTES,
+  MAX_VOICE_REQUEST_BYTES,
   OP_BINARY,
   OP_TEXT,
   PING_INTERVAL_S,
@@ -26,9 +30,12 @@ import {
   RESPONSE_TIMEOUT_MS,
   requestHeaders,
   responseHeaders,
+  VOICE_PLATFORMS,
+  VOICE_TIMEOUT_MS,
   type HaMessage,
   type HeaderMap,
   type RelayMessage,
+  type VoicePlatform,
 } from './frames';
 
 interface HttpStream {
@@ -49,6 +56,11 @@ interface WsStream {
 
 type Stream = HttpStream | WsStream;
 
+interface VoiceReply {
+  status: number;
+  body: string;
+}
+
 const HA_TAG = 'ha';
 // How long an access decision is reused before the database is asked again. Suspensions also clear it at once.
 const ACCESS_CACHE_MS = 60 * 1000;
@@ -59,6 +71,7 @@ const TEXT_ENCODER = new TextEncoder();
 
 export class TunnelDO {
   private streams = new Map<number, Stream>();
+  private voicePending = new Map<number, (reply: VoiceReply) => void>();
   private accessCache: { at: number; state: AccessState } | undefined;
   private nextId = 1;
 
@@ -76,6 +89,8 @@ export class TunnelDO {
       this.accessCache = undefined;
       return new Response('ok');
     }
+    if (url.pathname === '/__voice') return this.voice(request, request.headers.get('x-mdt-instance') ?? '');
+    if (url.pathname === '/__status') return json(200, { connected: this.haSocket() !== null });
     if (url.pathname.startsWith('/__proxy')) {
       const state = await this.accessFor(request.headers.get('x-mdt-instance') ?? '');
       if (state === 'missing') return new Response('Not found', { status: 404 });
@@ -147,6 +162,9 @@ export class TunnelDO {
     // Fail every stream, since HA can't answer them now.
     for (const [id, stream] of this.streams) this.failStream(id, stream, 'home assistant disconnected');
     this.streams.clear();
+    // Voice requests waiting on HA get an answer now instead of timing out.
+    for (const resolve of this.voicePending.values()) resolve(homeOfflineReply());
+    this.voicePending.clear();
   }
 
   async webSocketError(_ws: WebSocket): Promise<void> {
@@ -160,6 +178,8 @@ export class TunnelDO {
           ws.close(4002, 'unsupported protocol');
           return;
         }
+        // Older clients don't send caps, so they simply get no voice requests.
+        await this.state.storage.put('voice', Array.isArray(msg.caps) && msg.caps.includes('voice'));
         const instance = (await this.state.storage.get<string>('instance')) ?? '';
         const ready: RelayMessage = { t: 'ready', instance, max_streams: MAX_STREAMS };
         ws.send(JSON.stringify(ready));
@@ -212,6 +232,13 @@ export class TunnelDO {
         const stream = this.streams.get(msg.id);
         if (stream) this.failStream(msg.id, stream, msg.reason ?? 'reset by home assistant');
         this.streams.delete(msg.id);
+        return;
+      }
+      case 'voice_res': {
+        const resolve = this.voicePending.get(msg.id);
+        if (!resolve) return;
+        this.voicePending.delete(msg.id);
+        resolve({ status: msg.status, body: typeof msg.body === 'string' ? msg.body : '' });
         return;
       }
     }
@@ -409,6 +436,60 @@ export class TunnelDO {
     stream.pending = [];
     return new Response(null, { status: 101, webSocket: client });
   }
+
+  // Voice ------------------------------------------------------------------
+
+  /** One voice request for this home. Request body: {"platform": "google" | "alexa", "body": "<JSON string>"}. */
+  private async voice(request: Request, instance: string): Promise<Response> {
+    const access = await this.accessFor(instance);
+    if (access === 'missing') return new Response('Not found', { status: 404 });
+    if (access === 'inactive') return new Response('Remote access is not active for this home.', { status: 402 });
+
+    const parsed = await readVoiceRequest(request);
+    if (!parsed) return json(400, { error: 'invalid_request' });
+
+    const ha = this.haSocket();
+    if (!ha) return json(503, { error: 'home_offline' });
+    if (!(await this.state.storage.get<boolean>('voice'))) return json(503, { error: 'voice_unsupported' });
+    if (this.voicePending.size >= MAX_STREAMS) return json(503, { error: 'busy' });
+
+    const id = this.allocId();
+    const answer = new Promise<VoiceReply>((resolve) => this.voicePending.set(id, resolve));
+    ha.send(JSON.stringify({ t: 'voice', id, platform: parsed.platform, body: parsed.body } satisfies RelayMessage));
+
+    let reply: VoiceReply;
+    try {
+      reply = await withTimeout(answer, VOICE_TIMEOUT_MS);
+    } catch {
+      this.voicePending.delete(id);
+      return json(504, { error: 'home_timeout' });
+    }
+    if (TEXT_ENCODER.encode(reply.body).byteLength > MAX_VOICE_REPLY_BYTES) {
+      return json(502, { error: 'reply_too_large' });
+    }
+    return new Response(reply.body, {
+      status: reply.status,
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    });
+  }
+}
+
+/** Reads and checks a voice request. Returns null if it is malformed or too large. */
+async function readVoiceRequest(request: Request): Promise<{ platform: VoicePlatform; body: string } | null> {
+  let parsed: { platform?: unknown; body?: unknown };
+  try {
+    parsed = (await request.json()) as { platform?: unknown; body?: unknown };
+  } catch {
+    return null;
+  }
+  const platform = VOICE_PLATFORMS.find((p) => p === parsed.platform);
+  if (!platform || typeof parsed.body !== 'string') return null;
+  if (TEXT_ENCODER.encode(parsed.body).byteLength > MAX_VOICE_REQUEST_BYTES) return null;
+  return { platform, body: parsed.body };
+}
+
+function homeOfflineReply(): VoiceReply {
+  return { status: 503, body: JSON.stringify({ error: 'home_offline' }) };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {

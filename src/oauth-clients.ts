@@ -2,12 +2,12 @@
 // the environment, and redirect URIs must match exactly.
 //
 // Before this works for real, two values need filling in from the platforms' consoles:
-//   - GOOGLE_PROJECT_ID: the Actions project ID. Google's redirect URI contains it.
 //   - the platform client ID and secret: GOOGLE_VOICE_CLIENT_ID/SECRET and ALEXA_CLIENT_ID/SECRET.
+// The Google project ID (Actions console > Project settings) is set; Google's redirect URI contains it.
 
 import type { Env } from './env';
 
-export const GOOGLE_PROJECT_ID = 'REPLACE_WITH_GOOGLE_PROJECT_ID';
+export const GOOGLE_PROJECT_ID = 'mdtronix-ha-85262';
 export const ALEXA_VENDOR_ID = 'M23Q7Y64C1HJD4';
 
 export type Platform = 'google' | 'alexa';

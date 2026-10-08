@@ -12,6 +12,8 @@ import { handleAdminHomes, handleAdminSubscription } from './admin';
 import { authorizeGet, authorizePost, revokeEndpoint, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
 import { approveDevice, devLogin, linkPage } from './web';
+import { alexaDirective, googleFulfillment } from './voice';
+import { accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
 
 export { TunnelDO } from './tunnel-do';
 
@@ -19,6 +21,13 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   const method = request.method;
 
   if (pathname === '/healthz') return new Response('ok');
+
+  // Public site: the homepage and the account page a customer can reach on its own, outside HA.
+  if (pathname === '/' && method === 'GET') return homePage(request, env);
+  if (pathname === '/account' && method === 'GET') return accountPage(request, env);
+  if (pathname === '/account/sign-out' && method === 'POST') return accountSignOut(request, env);
+  if (pathname === '/account/unlink-home' && method === 'POST') return accountUnlinkHome(request, env);
+  if (pathname === '/account/unlink-voice' && method === 'POST') return accountUnlinkVoice(request, env);
 
   // HA login
   if (pathname === '/v1/ha/device' && method === 'POST') return createDeviceCode(request, env);
@@ -34,6 +43,10 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/oauth/authorize' && method === 'POST') return authorizePost(request, env);
   if (pathname === '/oauth/token' && method === 'POST') return tokenEndpoint(request, env);
   if (pathname === '/oauth/revoke' && method === 'POST') return revokeEndpoint(request, env);
+
+  // Voice fulfillment. Authenticated by the OAuth access token, and answered by the home (PROTOCOL.md 2.5).
+  if (pathname === '/v1/voice/google' && method === 'POST') return googleFulfillment(request, env);
+  if (pathname === '/v1/voice/alexa' && method === 'POST') return alexaDirective(request, env);
 
   // Tunnel
   if (pathname === '/v1/tunnel' && method === 'GET') return attachTunnel(request, env);
