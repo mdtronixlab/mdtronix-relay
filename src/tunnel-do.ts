@@ -98,7 +98,11 @@ export class TunnelDO {
         return new Response('Remote access is not active for this home.', { status: 402 });
       }
       const path = url.pathname.slice('/__proxy'.length) || '/';
-      return this.proxy(request, path, url.search);
+      // No leading "?": the HA tunnel client adds its own when it rebuilds the local URL
+      // (tunnel.py: f"?{query}" if query else ""). Sending it here too doubled it ("??token=..."),
+      // which broke anything relying on a query string being parsed correctly — notably HA's signed
+      // path tokens (integration brand icons, camera snapshots), which it then silently refused.
+      return this.proxy(request, path, url.search.slice(1));
     }
     return new Response('not found', { status: 404 });
   }

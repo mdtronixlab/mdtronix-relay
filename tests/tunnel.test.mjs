@@ -143,6 +143,11 @@ function fakeHa(ws) {
           ]);
         } else if (msg.path === '/api/not-cached') {
           respond(ws, msg.id, 200, { 'content-type': 'text/plain' }, [Buffer.from('fresh every time')]);
+        } else if (msg.path === '/api/echo-query') {
+          // Echoes exactly what arrived in the query field, the way HA's tunnel client would reconstruct
+          // its local URL from it (query.py: f"?{query}" if query else "") — a leading "?" here would
+          // double up there, which is exactly the bug this guards against.
+          respond(ws, msg.id, 200, { 'content-type': 'text/plain' }, [Buffer.from(JSON.stringify(msg.query))]);
         }
         break;
       case 'end':
@@ -301,6 +306,26 @@ test("admin: homes list needs the token and shows access status", async () => {
   assert.equal(row.email, email);
   assert.equal(row.subscription_status, "trialing");
   assert.ok(row.trial_ends_at > Date.now() / 1000, "trial runs into the future");
+});
+
+test("query strings reach HA with no leading '?' and no mangling (regression: double '?' broke signed-path tokens)", async () => {
+  const email = `query-${Date.now()}@example.test`;
+  const link = await linkHome(email);
+  const sub = link.subdomain;
+
+  const ha = await connectHa(link.tunnel_token);
+  fakeHa(ha);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const withQuery = await publicRequest({ sub, path: "/api/echo-query?token=abc&x=1" });
+  assert.equal(withQuery.status, 200);
+  assert.equal(JSON.parse(withQuery.body), "token=abc&x=1", "no leading '?' reaches HA");
+
+  const withoutQuery = await publicRequest({ sub, path: "/api/echo-query" });
+  assert.equal(withoutQuery.status, 200);
+  assert.equal(JSON.parse(withoutQuery.body), "", "an empty query string, not '?' or undefined");
+
+  ha.close();
 });
 
 test("edge cache: a public-cacheable response is served after HA goes offline, an uncacheable one is not", async () => {
