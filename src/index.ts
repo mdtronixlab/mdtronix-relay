@@ -14,7 +14,7 @@ import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunne
 import { devApprovedCheck, devLogin } from './web';
 import { alexaDirective, googleFulfillment } from './voice';
 import { alexaReportToken } from './alexa-events';
-import { googleReportToken } from './google-report';
+import { googleReportState } from './google-report';
 import { accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
 import { privacyPage, termsPage } from './legal';
 
@@ -37,9 +37,10 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   // HA login
   if (pathname === '/v1/ha/login' && method === 'POST') return haLogin(request, env);
   if (pathname === '/v1/ha/unlink' && method === 'POST') return unlink(request, env);
-  // Proactive state reporting: a short-lived token, authenticated by the home's own tunnel token.
+  // Proactive state reporting, authenticated by the home's own tunnel token: a short-lived token for
+  // Alexa's own Event Gateway call, but the relay makes Google's Home Graph call itself (see google-report.ts).
   if (pathname === '/v1/ha/alexa-report-token' && method === 'GET') return alexaReportToken(request, env);
-  if (pathname === '/v1/ha/google-report-token' && method === 'GET') return googleReportToken(request, env);
+  if (pathname === '/v1/ha/google-report-state' && method === 'POST') return googleReportState(request, env);
 
   // Operator
   if (pathname === '/v1/admin/subscription' && method === 'POST') return handleAdminSubscription(request, env);

@@ -1,8 +1,9 @@
 // End-to-end test of Google Home proactive-reporting support against a local relay:
-// GET /v1/ha/google-report-token. The real JWT-bearer exchange with Google isn't reachable from a
+// POST /v1/ha/google-report-state. The real JWT-bearer exchange with Google isn't reachable from a
 // test (no service account in this environment), so only what's testable without it is covered here:
-// the tunnel-token auth guard and the not-configured path. The full chain (sign the JWT, exchange it,
-// cache the token, Home Graph accepting a reportStateAndNotification call) is verified live.
+// the tunnel-token auth guard, payload validation, and the not-configured path. The full chain (sign
+// the JWT, exchange it, cache the token, Home Graph accepting a reportStateAndNotification call) is
+// verified live.
 // Run with `npm test`.
 
 import { test, before, after } from 'node:test';
@@ -78,22 +79,51 @@ async function linkHome(email) {
   return res.json();
 }
 
-test('report token: no bearer token is refused', async () => {
-  const res = await fetch(`${BASE}/v1/ha/google-report-token`);
+function reportState(token, body) {
+  return fetch(`${BASE}/v1/ha/google-report-state`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+test('report state: no bearer token is refused', async () => {
+  const res = await fetch(`${BASE}/v1/ha/google-report-state`, { method: 'POST', body: '{}' });
   assert.equal(res.status, 401);
   assert.deepEqual(await res.json(), { error: 'unauthorized' });
 });
 
-test('report token: an unknown tunnel token is refused', async () => {
-  const res = await fetch(`${BASE}/v1/ha/google-report-token`, { headers: { authorization: 'Bearer not-a-real-token' } });
+test('report state: an unknown tunnel token is refused', async () => {
+  const res = await reportState('not-a-real-token', { payload: {} });
   assert.equal(res.status, 401);
 });
 
-test('report token: a linked home gets not_configured until the service account secrets are set', async () => {
+test('report state: a linked home gets not_configured until the service account secrets are set', async () => {
   const email = `google-report-${Date.now()}@example.test`;
   const { tunnel_token: token } = await linkHome(email);
 
-  const res = await fetch(`${BASE}/v1/ha/google-report-token`, { headers: { authorization: `Bearer ${token}` } });
+  const res = await reportState(token, { payload: { devices: { states: {} } } });
   assert.equal(res.status, 503);
   assert.deepEqual(await res.json(), { error: 'not_configured' });
+});
+
+test('report state: a malformed or missing payload is refused before any Google call', async () => {
+  const email = `google-report-bad-${Date.now()}@example.test`;
+  const { tunnel_token: token } = await linkHome(email);
+
+  const missingPayload = await reportState(token, { requestId: 'x' });
+  assert.equal(missingPayload.status, 400);
+  assert.deepEqual(await missingPayload.json(), { error: 'invalid_request' });
+
+  const notJson = await fetch(`${BASE}/v1/ha/google-report-state`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: 'not json',
+  });
+  assert.equal(notJson.status, 400);
+
+  // Even with a valid payload shape, this still can't reach Google without the service account secrets —
+  // confirms validation happens first, not just that the whole path 503s regardless of the body.
+  const validShape = await reportState(token, { payload: { devices: { states: {} } } });
+  assert.equal(validShape.status, 503);
 });
