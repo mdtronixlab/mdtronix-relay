@@ -74,7 +74,7 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     // Local development only: wrangler dev rewrites Host to the route's domain, so tests pass the
     // intended host in x-mdt-dev-host. DEV_LOGIN is never set in production, so the header is ignored there.
@@ -82,7 +82,7 @@ export default {
     const host = devHost ?? request.headers.get('host') ?? url.host;
 
     const subdomain = instanceFromHost(host, env.INSTANCE_DOMAIN);
-    if (subdomain) return proxyToInstance(request, env, subdomain);
+    if (subdomain) return proxyToInstance(request, env, subdomain, ctx);
 
     try {
       return await relayRoutes(request, env, url.pathname);

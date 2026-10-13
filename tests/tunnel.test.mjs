@@ -137,6 +137,12 @@ function fakeHa(ws) {
           respond(ws, msg.id, 200, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'] }, [Buffer.from('hello from HA')]);
         } else if (msg.path === '/api/echo') {
           echoBodies.set(msg.id, []);
+        } else if (msg.path === '/static/cached.js') {
+          respond(ws, msg.id, 200, { 'content-type': 'application/javascript', 'cache-control': 'public, max-age=60' }, [
+            Buffer.from('console.log("cached")'),
+          ]);
+        } else if (msg.path === '/api/not-cached') {
+          respond(ws, msg.id, 200, { 'content-type': 'text/plain' }, [Buffer.from('fresh every time')]);
         }
         break;
       case 'end':
@@ -295,4 +301,32 @@ test("admin: homes list needs the token and shows access status", async () => {
   assert.equal(row.email, email);
   assert.equal(row.subscription_status, "trialing");
   assert.ok(row.trial_ends_at > Date.now() / 1000, "trial runs into the future");
+});
+
+test("edge cache: a public-cacheable response is served after HA goes offline, an uncacheable one is not", async () => {
+  const email = `cache-${Date.now()}@example.test`;
+  const link = await linkHome(email);
+  const sub = link.subdomain;
+
+  const ha = await connectHa(link.tunnel_token);
+  fakeHa(ha);
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Warm the cache for the public-cacheable path, and confirm the uncacheable one also works while HA is up.
+  const first = await publicRequest({ sub, path: "/static/cached.js" });
+  assert.equal(first.status, 200);
+  assert.equal(first.body, 'console.log("cached")');
+  assert.equal((await publicRequest({ sub, path: "/api/not-cached" })).status, 200);
+
+  // Take HA offline. A fresh, uncached path now fails...
+  const haClosed = once(ha, "close");
+  ha.close();
+  await haClosed;
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal((await publicRequest({ sub, path: "/api/not-cached" })).status, 503, "uncacheable paths need a live tunnel");
+
+  // ...but the cached one still answers, proving it was served from the edge, not the (now-dead) tunnel.
+  const second = await publicRequest({ sub, path: "/static/cached.js" });
+  assert.equal(second.status, 200);
+  assert.equal(second.body, 'console.log("cached")');
 });

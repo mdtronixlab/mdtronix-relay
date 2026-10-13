@@ -104,12 +104,40 @@ export async function unlinkForCustomer(env: Env, customerId: string): Promise<b
   return true;
 }
 
-/** Public traffic to <subdomain>.<INSTANCE_DOMAIN>, forwarded to Home Assistant over its tunnel. */
-export async function proxyToInstance(request: Request, env: Env, subdomain: string): Promise<Response> {
+/**
+ * True for a response HA itself marked safe to cache for everyone — its static frontend assets are
+ * served this way (hashed filenames, "Cache-Control: public, max-age=..., immutable"), while the
+ * dashboard HTML, /api/*, and anything else login-dependent or dynamic are not. Caching is opt-in
+ * (requires "public" explicitly) rather than opt-out, so nothing unexpected ever gets cached.
+ */
+function isPubliclyCacheable(response: Response): boolean {
+  const cacheControl = response.headers.get('cache-control') ?? '';
+  return response.status === 200 && /(?:^|,)\s*public\s*(?:,|;|$)/i.test(cacheControl);
+}
+
+/**
+ * Public traffic to <subdomain>.<INSTANCE_DOMAIN>, forwarded to Home Assistant over its tunnel.
+ *
+ * GETs are checked against Cloudflare's edge cache first, so a dashboard load's static assets (frontend
+ * JS/CSS bundles, icons, fonts — the bulk of what a page load fetches) can be served instantly from the
+ * edge instead of round-tripping through the Durable Object and the WebSocket tunnel every time.
+ */
+export async function proxyToInstance(request: Request, env: Env, subdomain: string, ctx: ExecutionContext): Promise<Response> {
+  const cacheable = request.method === 'GET';
+  if (cacheable) {
+    const cached = await caches.default.match(request);
+    if (cached) return cached;
+  }
+
   // Access is checked inside the tunnel object, where it is cached, so this path makes no database query.
   const url = new URL(request.url);
   const stub = env.TUNNEL.get(env.TUNNEL.idFromName(subdomain));
   const forwarded = new Request(`https://do.internal/__proxy${url.pathname}${url.search}`, request);
   forwarded.headers.set('x-mdt-instance', subdomain);
-  return stub.fetch(forwarded);
+  const response = await stub.fetch(forwarded);
+
+  if (cacheable && isPubliclyCacheable(response)) {
+    ctx.waitUntil(caches.default.put(request, response.clone()));
+  }
+  return response;
 }
