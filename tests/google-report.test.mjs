@@ -53,16 +53,9 @@ after(() => {
   else dev.kill();
 });
 
-async function login(email) {
-  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
-  assert.ok(cookie, 'dev login set a session cookie');
-  return cookie.split(';')[0];
-}
-
 /**
- * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
- * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ * Registers a real password account, approves it, then signs HA in directly with POST /v1/ha/login —
+ * the flow the mdtronix_cloud integration itself uses.
  */
 async function linkHome(email) {
   await fetch(`${BASE}/register`, {
@@ -98,7 +91,6 @@ test('report token: an unknown tunnel token is refused', async () => {
 
 test('report token: a linked home gets not_configured until the service account secrets are set', async () => {
   const email = `google-report-${Date.now()}@example.test`;
-  await login(email);
   const { tunnel_token: token } = await linkHome(email);
 
   const res = await fetch(`${BASE}/v1/ha/google-report-token`, { headers: { authorization: `Bearer ${token}` } });

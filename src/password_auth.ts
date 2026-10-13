@@ -13,6 +13,11 @@ import { checkLimit, clientKey } from './ratelimit';
 
 const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// A syntactically valid but unusable hash, compared against when there's no real one — so an unknown
+// email or an unclaimed legacy row still pays the same PBKDF2 cost as a wrong password against a real
+// account. Without this, those cases return measurably faster, which leaks which emails exist via
+// response timing even though the response body and status code are identical either way.
+const DUMMY_HASH = 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -97,29 +102,23 @@ export async function registerCustomer(request: Request, env: Env): Promise<Resp
   if (password.length < MIN_PASSWORD_LENGTH) return reRender(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
   if (password !== confirm) return reRender('Passwords do not match.');
 
-  const existing = await env.CUSTOMERS.prepare('SELECT id, password_hash FROM customers WHERE email = ?')
-    .bind(email)
-    .first<{ id: string; password_hash: string | null }>();
-  // An existing row with no password came from the old Google sign-in (now removed) — "registering" it
-  // just sets a password, rather than leaving a dead end where the email is taken but nothing can sign in.
-  if (existing && existing.password_hash) return reRender('An account with that email already exists. Sign in instead.');
+  // Any existing row blocks registration — including one with no password yet (a leftover from the old
+  // Google sign-in). Letting /register set a password on someone else's existing row with no proof of
+  // ownership would be an account takeover: just knowing a customer's email would be enough to sign in as
+  // them. A customer in that state needs staff to migrate their account, not a self-service path here.
+  const existing = await env.CUSTOMERS.prepare('SELECT 1 FROM customers WHERE email = ?').bind(email).first();
+  if (existing) return reRender('An account with that email already exists. Sign in instead, or contact MDtronix if you can\'t.');
 
   const now = nowSeconds();
-  const id = existing?.id ?? randomId();
-  if (existing) {
-    await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE id = ?')
-      .bind(await hashPassword(password), now, id)
-      .run();
-  } else {
-    // google_sub is still NOT NULL UNIQUE (see migrations/0007_password_auth.sql); password accounts get a
-    // synthetic placeholder instead of a real Google subject id, the same trick web.ts's dev login uses.
-    await env.CUSTOMERS.prepare(
-      `INSERT INTO customers (id, google_sub, email, email_verified, password_hash, status, created_at, updated_at, last_login_at)
-       VALUES (?, ?, ?, 1, ?, 'active', ?, ?, NULL)`,
-    )
-      .bind(id, `local:${id}`, email, await hashPassword(password), now, now)
-      .run();
-  }
+  const id = randomId();
+  // google_sub is still NOT NULL UNIQUE (see migrations/0007_password_auth.sql); password accounts get a
+  // synthetic placeholder instead of a real Google subject id, the same trick web.ts's dev login uses.
+  await env.CUSTOMERS.prepare(
+    `INSERT INTO customers (id, google_sub, email, email_verified, password_hash, status, created_at, updated_at, last_login_at)
+     VALUES (?, ?, ?, 1, ?, 'active', ?, ?, NULL)`,
+  )
+    .bind(id, `local:${id}`, email, await hashPassword(password), now, now)
+    .run();
 
   if (await isApprovedEmail(env.CUSTOMERS, email)) {
     const token = await createSession(env.CUSTOMERS, id);
@@ -151,9 +150,11 @@ export async function authenticateCustomer(db: D1Database, email: string, passwo
     .bind(normalized)
     .first<{ id: string; password_hash: string | null; status: string }>();
 
-  // Same reason whether the email is unknown or the password is wrong, so a failed attempt doesn't
-  // reveal which account exists.
-  if (!row || !row.password_hash || !(await verifyPassword(password, row.password_hash))) {
+  // Always run verifyPassword, against the real hash if there is one or the dummy if not, so this takes
+  // the same time either way — same reason whether the email is unknown or the password is wrong, so a
+  // failed attempt doesn't reveal which account exists, including through response timing.
+  const passwordOk = await verifyPassword(password, row?.password_hash ?? DUMMY_HASH);
+  if (!row || !row.password_hash || !passwordOk) {
     return { ok: false, reason: 'invalid_credentials' };
   }
   if (row.status !== 'active') return { ok: false, reason: 'account_suspended' };

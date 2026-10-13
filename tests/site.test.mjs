@@ -74,10 +74,13 @@ async function post(path, cookie, body = {}) {
 }
 
 /**
- * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
- * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ * Registers a real password account, approves it, and signs it in both as a browser session (for
+ * viewing /account) and directly via HA login (POST /v1/ha/login) — the same account for both, matching
+ * what a real customer does: register and approve on the website, then sign in to the same account from
+ * HA. /register no longer claims an existing passwordless row (that was an account-takeover path), so
+ * this always creates a fresh account rather than relying on a prior dev login.
  */
-async function linkHome(email) {
+async function registerAndLink(email) {
   await fetch(`${BASE}/register`, {
     method: 'POST',
     headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
@@ -89,13 +92,22 @@ async function linkHome(email) {
     headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ email, action: 'approve' }),
   });
-  const res = await fetch(`${BASE}/v1/ha/login`, {
+  const loginRes = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, next: '/account' }),
+    redirect: 'manual',
+  });
+  const cookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
+  assert.ok(cookie, 'password login set a session cookie');
+
+  const haRes = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password: HA_PASSWORD }),
   });
-  assert.equal(res.status, 200, await res.clone().text());
-  return res.json();
+  assert.equal(haRes.status, 200, await haRes.clone().text());
+  return { cookie: cookie.split(';')[0], link: await haRes.json() };
 }
 
 /** Runs the Google Home consent flow and returns an access token, linking the platform to this customer. */
@@ -173,8 +185,7 @@ test('account page shows no home and no subscription for a brand new customer', 
 
 test('account page shows the remote URL, trial status, and disconnects on request', async () => {
   const email = `site-home2-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  const link = await linkHome(email);
+  const { cookie, link } = await registerAndLink(email);
 
   const res = await get('/account', cookie);
   const text = await res.text();

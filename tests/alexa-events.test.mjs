@@ -60,18 +60,13 @@ after(() => {
   else dev.kill();
 });
 
-async function login(email) {
-  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
-  assert.ok(cookie, 'dev login set a session cookie');
-  return cookie.split(';')[0];
-}
-
 /**
- * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
- * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ * Registers a real password account, approves it, and signs it in both as a browser session (for Alexa
+ * account-linking consent) and directly via HA login (POST /v1/ha/login) — the same account for both.
+ * /register no longer claims an existing passwordless row (that was an account-takeover path), so this
+ * always creates a fresh account rather than relying on a prior dev login.
  */
-async function linkHome(email) {
+async function registerAndLink(email) {
   await fetch(`${BASE}/register`, {
     method: 'POST',
     headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
@@ -83,13 +78,22 @@ async function linkHome(email) {
     headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ email, action: 'approve' }),
   });
-  const res = await fetch(`${BASE}/v1/ha/login`, {
+  const loginRes = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, next: '/account' }),
+    redirect: 'manual',
+  });
+  const cookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
+  assert.ok(cookie, 'password login set a session cookie');
+
+  const haRes = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password: HA_PASSWORD }),
   });
-  assert.equal(res.status, 200, await res.clone().text());
-  return res.json();
+  assert.equal(haRes.status, 200, await haRes.clone().text());
+  return { cookie: cookie.split(';')[0], link: await haRes.json() };
 }
 
 /** Runs the Alexa account-linking consent and returns an OAuth access token, the way Alexa holds one. */
@@ -149,8 +153,8 @@ test('report token: an unknown tunnel token is refused', async () => {
 
 test('report token: a linked home with no AcceptGrant yet gets no_proactive_grant', async () => {
   const email = `alexa-events-${Date.now()}@example.test`;
-  await login(email);
-  const { tunnel_token: token } = await linkHome(email);
+  const { link } = await registerAndLink(email);
+  const token = link.tunnel_token;
 
   const res = await fetch(`${BASE}/v1/ha/alexa-report-token`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(res.status, 404);
@@ -183,8 +187,7 @@ test('accept grant: an unrecognized grantee token is refused', async () => {
 
 test('accept grant: a real account link resolves, then fails without LWA credentials configured', async () => {
   const email = `alexa-events-grant-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  await linkHome(email);
+  const { cookie } = await registerAndLink(email);
   const token = await alexaAccessToken(cookie);
 
   const res = await fetch(`${BASE}/v1/voice/alexa`, {

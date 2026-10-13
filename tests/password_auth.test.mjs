@@ -145,18 +145,21 @@ test('registration is refused for a short password, a mismatched confirmation, o
   assert.match(await duplicate.text(), /already exists/);
 });
 
-test('registering a passwordless account (e.g. a leftover Google sign-in row) claims it instead of rejecting it', async () => {
-  const email = `claim-${Date.now()}@example.test`;
+test('registering over a passwordless existing row (e.g. a leftover Google sign-in account) is refused, not claimed', async () => {
+  // Letting /register set a password on someone else's existing row would be an account takeover: just
+  // knowing a customer's email would be enough to sign in as them. It must be refused exactly like any
+  // other already-registered email, with no way to tell the two cases apart from the response.
+  const email = `no-claim-${Date.now()}@example.test`;
   await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
 
   const reg = await register({ email, password: 'correct horse', password_confirm: 'correct horse' });
-  assert.equal(reg.status, 200, await reg.clone().text());
-  assert.match(await reg.text(), /waiting on MDtronix staff/);
+  assert.equal(reg.status, 400);
+  assert.match(await reg.text(), /already exists/);
 
   await approve(email);
-  const ok = await login({ email, password: 'correct horse' });
-  assert.equal(ok.status, 302, await ok.clone().text());
-  assert.ok(sessionCookie(ok));
+  const attempt = await login({ email, password: 'correct horse' });
+  assert.equal(attempt.status, 400, 'the password was never actually set, so this is not a valid login either');
+  assert.match(await attempt.text(), /Incorrect email or password/);
 });
 
 test('register and login POSTs require the relay origin', async () => {

@@ -112,6 +112,9 @@ export async function unlinkForCustomer(env: Env, customerId: string): Promise<b
  */
 function isPubliclyCacheable(response: Response): boolean {
   const cacheControl = response.headers.get('cache-control') ?? '';
+  // A Set-Cookie is never cached, regardless of Cache-Control — a genuinely static response has no
+  // reason to carry one, and caching one at the edge would mean the edge replays it to other visitors.
+  if (response.headers.has('set-cookie')) return false;
   return response.status === 200 && /(?:^|,)\s*public\s*(?:,|;|$)/i.test(cacheControl);
 }
 

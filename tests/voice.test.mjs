@@ -60,8 +60,7 @@ before(async () => {
   );
   await waitForHealth();
   const sharedEmail = `voice-shared-${Date.now()}@example.test`;
-  const cookie = await login(sharedEmail);
-  shared = { cookie, link: await linkHome(sharedEmail) };
+  shared = await registerAndLink(sharedEmail);
 });
 
 after(() => {
@@ -72,18 +71,13 @@ after(() => {
 
 // --- helpers --------------------------------------------------------------
 
-async function login(email) {
-  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
-  assert.ok(cookie, 'dev login set a session cookie');
-  return cookie.split(';')[0];
-}
-
 /**
- * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
- * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ * Registers a real password account, approves it, and signs it in both as a browser session (for voice
+ * account-linking consent) and directly via HA login (POST /v1/ha/login) — the same account for both.
+ * /register no longer claims an existing passwordless row (that was an account-takeover path), so this
+ * always creates a fresh account rather than relying on a prior dev login.
  */
-async function linkHome(email) {
+async function registerAndLink(email) {
   await fetch(`${BASE}/register`, {
     method: 'POST',
     headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
@@ -95,13 +89,22 @@ async function linkHome(email) {
     headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ email, action: 'approve' }),
   });
-  const res = await fetch(`${BASE}/v1/ha/login`, {
+  const loginRes = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, next: '/account' }),
+    redirect: 'manual',
+  });
+  const cookie = loginRes.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
+  assert.ok(cookie, 'password login set a session cookie');
+
+  const haRes = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password: HA_PASSWORD }),
   });
-  assert.equal(res.status, 200, await res.clone().text());
-  return res.json();
+  assert.equal(haRes.status, 200, await haRes.clone().text());
+  return { cookie: cookie.split(';')[0], link: await haRes.json() };
 }
 
 /** Runs the account linking consent and returns an OAuth access token for the platform. */
@@ -331,8 +334,7 @@ test('voice: a malformed body is rejected with 400', async () => {
 
 test('voice: when the home is offline, the platform gets 503 home_offline', async () => {
   const email = `voice-offline-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  await linkHome(email);
+  const { cookie } = await registerAndLink(email);
   const token = await accessToken(cookie, 'google');
   const res = await voiceRequest('/v1/voice/google', token, googleIntent('action.devices.SYNC'));
   assert.equal(res.status, 503);
@@ -368,8 +370,7 @@ test('voice: a home that does not answer in time gets 504 home_timeout', async (
 
 test('voice: a suspended home is refused with 402 and the platform sees no device data', async () => {
   const email = `voice-suspended-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  const link = await linkHome(email);
+  const { cookie, link } = await registerAndLink(email);
   const home = await connectHome(link.tunnel_token);
   const token = await accessToken(cookie, 'google');
 
