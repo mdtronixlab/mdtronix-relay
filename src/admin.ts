@@ -8,6 +8,8 @@ import { approveEmail, listApprovedEmails, revokeApprovedEmail } from './approva
 import { constantTimeEqual, nowSeconds } from './crypto';
 import type { Env } from './env';
 import { json, jsonError } from './http';
+import { hashPassword } from './password';
+import { MIN_PASSWORD_LENGTH } from './password_auth';
 
 /** Checks the operator bearer token. Returns an error response, or null when the caller is allowed. */
 async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
@@ -118,4 +120,35 @@ export async function handleSetApprovedEmail(request: Request, env: Env): Promis
     return json(removed ? 200 : 404, { ok: removed });
   }
   return jsonError(400, 'invalid_action');
+}
+
+/**
+ * POST /v1/admin/set-password
+ * { "email": "...", "password": "..." }
+ *
+ * Sets or replaces a customer's password directly — the only way to get a legacy (pre-password-auth,
+ * Google-linked) account working, or to help a customer who's locked out, since there's no self-service
+ * reset. Doesn't touch approval status; staff still approve the email separately, same as always.
+ */
+export async function handleSetPassword(request: Request, env: Env): Promise<Response> {
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
+
+  let body: { email?: unknown; password?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError(400, 'invalid_json');
+  }
+  if (typeof body.email !== 'string' || !body.email.includes('@')) return jsonError(400, 'invalid_email');
+  if (typeof body.password !== 'string' || body.password.length < MIN_PASSWORD_LENGTH) {
+    return jsonError(400, 'invalid_password');
+  }
+
+  const email = body.email.trim().toLowerCase();
+  const result = await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE email = ?')
+    .bind(await hashPassword(body.password), nowSeconds(), email)
+    .run();
+  if (result.meta.changes !== 1) return jsonError(404, 'not_found');
+  return json(200, { ok: true });
 }

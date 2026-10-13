@@ -8,7 +8,7 @@ import { haLogin } from './ha_login';
 import { loginCustomer, loginPage, registerCustomer, registerPage } from './password_auth';
 import type { Env } from './env';
 import { jsonError } from './http';
-import { handleAdminHomes, handleAdminSubscription, handleListApprovedEmails, handleSetApprovedEmail } from './admin';
+import { handleAdminHomes, handleAdminSubscription, handleListApprovedEmails, handleSetApprovedEmail, handleSetPassword } from './admin';
 import { authorizeGet, authorizePost, revokeEndpoint, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
 import { devApprovedCheck, devLogin } from './web';
@@ -47,6 +47,7 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/v1/admin/homes' && method === 'GET') return handleAdminHomes(request, env);
   if (pathname === '/v1/admin/approved-emails' && method === 'GET') return handleListApprovedEmails(request, env);
   if (pathname === '/v1/admin/approved-emails' && method === 'POST') return handleSetApprovedEmail(request, env);
+  if (pathname === '/v1/admin/set-password' && method === 'POST') return handleSetPassword(request, env);
 
   // Voice account linking (Google Home, Alexa)
   if (pathname === '/oauth/authorize' && method === 'GET') return authorizeGet(request, env);

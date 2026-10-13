@@ -162,6 +162,42 @@ test('registering over a passwordless existing row (e.g. a leftover Google sign-
   assert.match(await attempt.text(), /Incorrect email or password/);
 });
 
+function setPassword(email, password, token = ADMIN_TOKEN) {
+  return fetch(`${BASE}/v1/admin/set-password`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+test('admin set-password gives a passwordless legacy account (or a locked-out customer) a working login again', async () => {
+  const email = `legacy-${Date.now()}@example.test`;
+  await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+  await approve(email);
+
+  // Before: no password was ever set (the old Google sign-in didn't use one), so login fails.
+  const before = await login({ email, password: 'new password here' });
+  assert.equal(before.status, 400);
+
+  const set = await setPassword(email, 'new password here');
+  assert.equal(set.status, 200, await set.clone().text());
+  assert.deepEqual(await set.json(), { ok: true });
+
+  const after = await login({ email, password: 'new password here' });
+  assert.equal(after.status, 302, await after.clone().text());
+  assert.ok(sessionCookie(after));
+});
+
+test('admin set-password requires the admin token and a real email and valid-length password', async () => {
+  const email = `setpw-guard-${Date.now()}@example.test`;
+  await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+
+  assert.equal((await setPassword(email, 'a long enough password', 'wrong')).status, 401);
+  assert.equal((await setPassword('not-an-email', 'a long enough password')).status, 400);
+  assert.equal((await setPassword(email, 'short')).status, 400);
+  assert.equal((await setPassword(`unknown-${Date.now()}@example.test`, 'a long enough password')).status, 404);
+});
+
 test('register and login POSTs require the relay origin', async () => {
   const email = `noorigin-${Date.now()}@example.test`;
   const res = await fetch(`${BASE}/register`, {

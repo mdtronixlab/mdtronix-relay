@@ -11,7 +11,7 @@ import { isApprovedEmail } from './approval';
 import { createSession, sessionCookie } from './web';
 import { checkLimit, clientKey } from './ratelimit';
 
-const MIN_PASSWORD_LENGTH = 8;
+export const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // A syntactically valid but unusable hash, compared against when there's no real one — so an unknown
 // email or an unclaimed legacy row still pays the same PBKDF2 cost as a wrong password against a real
