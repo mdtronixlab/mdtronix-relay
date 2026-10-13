@@ -1,8 +1,6 @@
 // Random values, hashes, HMAC, and base64url helpers. Web Crypto only, which Workers provide.
 
 const SUBDOMAIN_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
-// No vowels and no look-alike characters, so a code read off a screen is unambiguous.
-const USER_CODE_ALPHABET = 'BCDFGHJKLMNPQRSTVWXZ';
 
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -67,42 +65,10 @@ export function randomSubdomain(): string {
   return sampleFrom(SUBDOMAIN_ALPHABET, 10);
 }
 
-/** Code the customer types in the browser, formatted XXXX-XXXX. */
-export function randomUserCode(): string {
-  const raw = sampleFrom(USER_CODE_ALPHABET, 8);
-  return `${raw.slice(0, 4)}-${raw.slice(4)}`;
-}
-
-/** Makes typed input comparable: upper case, letters and digits only. */
-export function normalizeUserCode(input: string): string {
-  return input.toUpperCase().replace(/[^A-Z0-9]/g, '');
-}
-
 /** Tunnel token, plus the SHA-256 hash that is the only thing stored. */
 export async function issueTunnelToken(): Promise<{ token: string; hash: string }> {
   const token = randomToken(32);
   return { token, hash: await sha256Hex(token) };
-}
-
-async function hmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, [
-    'sign',
-    'verify',
-  ]);
-}
-
-export async function hmacSign(secret: string, data: string): Promise<string> {
-  const sig = await crypto.subtle.sign('HMAC', await hmacKey(secret), new TextEncoder().encode(data));
-  return bytesToBase64Url(new Uint8Array(sig));
-}
-
-/** Uses crypto.subtle.verify, which compares in constant time. Malformed input returns false. */
-export async function hmacVerify(secret: string, data: string, signature: string): Promise<boolean> {
-  try {
-    return await crypto.subtle.verify('HMAC', await hmacKey(secret), base64UrlToBytes(signature), new TextEncoder().encode(data));
-  } catch {
-    return false;
-  }
 }
 
 /** Compares two strings in constant time. Both are hashed first, so the length of the input doesn't leak either. */

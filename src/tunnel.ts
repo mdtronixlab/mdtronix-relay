@@ -25,7 +25,7 @@ export function instanceFromHost(host: string, instanceDomain: string): string |
 }
 
 /** The instance a live, unrevoked token belongs to, if its customer is active. */
-async function instanceForToken(env: Env, token: string): Promise<string | null> {
+export async function instanceForTunnelToken(env: Env, token: string): Promise<string | null> {
   const row = await env.CUSTOMERS.prepare(
     `SELECT t.instance FROM tunnel_tokens t
      JOIN instances i ON i.subdomain = t.instance
@@ -35,6 +35,19 @@ async function instanceForToken(env: Env, token: string): Promise<string | null>
     .bind(await sha256Hex(token))
     .first<{ instance: string }>();
   return row?.instance ?? null;
+}
+
+/** The instance and customer a live, unrevoked tunnel token belongs to, if its customer is active. */
+export async function homeForTunnelToken(env: Env, token: string): Promise<{ instance: string; customerId: string } | null> {
+  const row = await env.CUSTOMERS.prepare(
+    `SELECT t.instance, i.customer_id FROM tunnel_tokens t
+     JOIN instances i ON i.subdomain = t.instance
+     JOIN customers c ON c.id = i.customer_id
+     WHERE t.token_hash = ? AND t.revoked_at IS NULL AND c.status = 'active'`,
+  )
+    .bind(await sha256Hex(token))
+    .first<{ instance: string; customer_id: string }>();
+  return row ? { instance: row.instance, customerId: row.customer_id } : null;
 }
 
 /** Closes the live tunnel for an instance, if one is connected. */
@@ -52,7 +65,7 @@ export async function attachTunnel(request: Request, env: Env): Promise<Response
     return jsonError(426, 'unsupported_protocol');
   }
   const token = bearer(request);
-  const instance = token ? await instanceForToken(env, token) : null;
+  const instance = token ? await instanceForTunnelToken(env, token) : null;
   if (!instance) return jsonError(401, 'unauthorized');
   if (!(await instanceHasAccess(env.CUSTOMERS, instance))) return jsonError(403, 'subscription_inactive');
 
@@ -67,7 +80,7 @@ export async function attachTunnel(request: Request, env: Env): Promise<Response
 /** POST /v1/ha/unlink. Revokes the token, closes the tunnel, and keeps the subdomain reserved. */
 export async function unlink(request: Request, env: Env): Promise<Response> {
   const token = bearer(request);
-  const instance = token ? await instanceForToken(env, token) : null;
+  const instance = token ? await instanceForTunnelToken(env, token) : null;
   if (!instance) return jsonError(401, 'unauthorized');
 
   await env.CUSTOMERS.prepare('UPDATE tunnel_tokens SET revoked_at = ? WHERE instance = ? AND revoked_at IS NULL')

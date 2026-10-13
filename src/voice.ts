@@ -8,6 +8,7 @@ import type { Env } from './env';
 import { json, jsonError } from './http';
 import { bearer } from './tunnel';
 import { customerForAccessToken, revokeGrantForAccessToken } from './oauth';
+import { handleAcceptGrant, isAcceptGrant } from './alexa-events';
 
 const GOOGLE_SYNC = 'action.devices.SYNC';
 const GOOGLE_DISCONNECT = 'action.devices.DISCONNECT';
@@ -80,8 +81,10 @@ interface AlexaScope {
 
 interface AlexaDirective {
   directive?: {
+    header?: { namespace?: unknown; name?: unknown; messageId?: unknown };
     endpoint?: { scope?: AlexaScope };
-    payload?: { scope?: AlexaScope };
+    // `scope` is the shape every normal directive uses; `grant`/`grantee` only appear on AcceptGrant.
+    payload?: { scope?: AlexaScope; grant?: { code?: unknown }; grantee?: { token?: unknown } };
   };
 }
 
@@ -95,6 +98,14 @@ export async function alexaDirective(request: Request, env: Env): Promise<Respon
     doc = JSON.parse(text) as AlexaDirective;
   } catch {
     return jsonError(400, 'invalid_request');
+  }
+
+  // Alexa sends this once, right after account linking, because the skill has the "Send Alexa
+  // Events" permission. It carries its own bearer token (payload.grantee.token) rather than the
+  // endpoint/payload.scope shape every other directive uses, and it's answered here directly —
+  // the home has no part in it.
+  if (isAcceptGrant(doc)) {
+    return handleAcceptGrant(doc, env, (token) => customerForAccessToken(env.CUSTOMERS, token).then((c) => c?.customerId ?? null));
   }
 
   // Discovery carries the token in payload.scope, other directives in endpoint.scope.

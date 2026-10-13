@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 8801;
+const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ADMIN_TOKEN = 'testadmin';
 const cwd = fileURLToPath(new URL('..', import.meta.url));
@@ -35,9 +35,6 @@ before(async () => {
     [
       'wrangler', 'dev', '--port', String(PORT), '--local',
       '--var', 'DEV_LOGIN:true',
-      '--var', `SESSION_SECRET:${'t'.repeat(32)}`,
-      '--var', 'GOOGLE_CLIENT_ID:test',
-      '--var', 'GOOGLE_CLIENT_SECRET:test',
       '--var', `ADMIN_TOKEN:${ADMIN_TOKEN}`,
     ],
     { cwd, shell: true, stdio: 'ignore' },

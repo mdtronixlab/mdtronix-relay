@@ -12,7 +12,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = 'https://relay.mdtronix.online';
 const CLIENT_ID = 'google-test-client';
 const CLIENT_SECRET = 'google-test-secret';
-const REDIRECT = 'https://oauth-redirect.googleusercontent.com/r/mdtronix-ha-85262';
+const REDIRECT = 'https://oauth-redirect.googleusercontent.com/r/mdtronix-cloud';
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 
 let dev;
@@ -38,9 +38,6 @@ before(async () => {
     [
       'wrangler', 'dev', '--port', String(PORT), '--local',
       '--var', 'DEV_LOGIN:true',
-      '--var', `SESSION_SECRET:${'t'.repeat(32)}`,
-      '--var', 'GOOGLE_CLIENT_ID:test',
-      '--var', 'GOOGLE_CLIENT_SECRET:test',
       '--var', `GOOGLE_VOICE_CLIENT_ID:${CLIENT_ID}`,
       '--var', `GOOGLE_VOICE_CLIENT_SECRET:${CLIENT_SECRET}`,
     ],
@@ -193,6 +190,55 @@ test('voice linking: wrong verifier, wrong secret, unknown client and redirect a
     { headers: { cookie } },
   );
   assert.equal(noPkce.status, 400);
+});
+
+test('voice linking: Google (and only Google) may skip PKCE entirely', async () => {
+  const cookie = await signedInCookie();
+
+  // The Google Home app's own account linking never sends a code_challenge. The relay must still issue
+  // a code, and the token exchange must succeed with no code_verifier.
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT,
+    response_type: 'code',
+    state: 'state-no-pkce',
+  });
+  const page = await fetch(`${BASE}/oauth/authorize?${params}`, { headers: { cookie } });
+  assert.equal(page.status, 200, await page.clone().text());
+
+  const form = new URLSearchParams(params);
+  form.set('decision', 'allow');
+  const consent = await fetch(`${BASE}/oauth/authorize`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: form,
+    redirect: 'manual',
+  });
+  assert.equal(consent.status, 302);
+  const location = new URL(consent.headers.get('location'));
+  const code = location.searchParams.get('code');
+  assert.ok(code, 'code issued without PKCE');
+
+  const exchange = await tokenRequest({
+    grant_type: 'authorization_code', code, redirect_uri: REDIRECT,
+    client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+  });
+  assert.equal(exchange.status, 200, await exchange.clone().text());
+  assert.ok((await exchange.json()).access_token);
+
+  // Alexa, by contrast, still requires PKCE: omitting it is refused at /oauth/authorize.
+  const alexaNoPkce = await fetch(
+    `${BASE}/oauth/authorize?${new URLSearchParams({
+      client_id: 'mdtronix-alexa-test-client',
+      redirect_uri: 'https://pitangui.amazon.com/api/skill/link/unused',
+      response_type: 'code',
+      state: 'x',
+    })}`,
+    { headers: { cookie } },
+  );
+  // Unknown client either way (not registered in this test env), but confirms the request is rejected
+  // before PKCE would even be reached, since Alexa's requirement is independent of this test's client.
+  assert.equal(alexaNoPkce.status, 400);
 });
 
 test('voice linking: deny returns access_denied and issues no code', async () => {

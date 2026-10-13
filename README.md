@@ -1,8 +1,8 @@
 # mdtronix-relay
 
-Remote access relay for MDtronix customers' Home Assistant instances. It runs on Cloudflare Workers with one Durable Object per instance. It holds the device login, Google sign-in, and the HA tunnel.
+Remote access relay for MDtronix customers' Home Assistant instances. It runs on Cloudflare Workers with one Durable Object per instance. It holds the device login, customer email/password sign-in, and the HA tunnel.
 
-Status: the device login, Google sign-in, approval page, tunnel, and unlink are built and tested locally. Not deployed. Protocol: `docs/remote-access/PROTOCOL.md` in the SmartHome repo. Open items are in `docs/remote-access/PHASE0.md`.
+Status: the device login, email/password sign-in, approval page, tunnel, and unlink are built and tested locally. Protocol: `docs/remote-access/PROTOCOL.md` in the SmartHome repo. Open items are in `docs/remote-access/PHASE0.md`.
 
 ## Setup
 
@@ -13,7 +13,7 @@ npm run d1:migrate:local
 npm run dev
 ```
 
-Deploy only after the schema in `migrations/` is reviewed and the Google OAuth client secret is set with `npx wrangler secret put GOOGLE_CLIENT_SECRET`. The Workers Paid plan is needed for Durable Object WebSocket volume.
+Deploy only after the schema in `migrations/` is reviewed. The Workers Paid plan is needed for Durable Object WebSocket volume.
 
 ## Tests
 

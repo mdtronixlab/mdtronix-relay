@@ -16,13 +16,14 @@ const ADMIN_TOKEN = 'testadmin';
 const GOOGLE = {
   clientId: 'google-test-client',
   clientSecret: 'google-test-secret',
-  redirect: 'https://oauth-redirect.googleusercontent.com/r/mdtronix-ha-85262',
+  redirect: 'https://oauth-redirect.googleusercontent.com/r/mdtronix-cloud',
 };
 const ALEXA = {
   clientId: 'alexa-test-client',
   clientSecret: 'alexa-test-secret',
   redirect: 'https://pitangui.amazon.com/api/skill/link/M23Q7Y64C1HJD4',
 };
+const HA_PASSWORD = 'correct horse battery staple';
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 
 let dev;
@@ -49,9 +50,6 @@ before(async () => {
     [
       'wrangler', 'dev', '--port', String(PORT), '--local',
       '--var', 'DEV_LOGIN:true',
-      '--var', `SESSION_SECRET:${'t'.repeat(32)}`,
-      '--var', 'GOOGLE_CLIENT_ID:test',
-      '--var', 'GOOGLE_CLIENT_SECRET:test',
       '--var', `GOOGLE_VOICE_CLIENT_ID:${GOOGLE.clientId}`,
       '--var', `GOOGLE_VOICE_CLIENT_SECRET:${GOOGLE.clientSecret}`,
       '--var', `ALEXA_CLIENT_ID:${ALEXA.clientId}`,
@@ -61,8 +59,9 @@ before(async () => {
     { cwd, shell: true, stdio: 'ignore' },
   );
   await waitForHealth();
-  const cookie = await login(`voice-shared-${Date.now()}@example.test`);
-  shared = { cookie, link: await linkHome(cookie) };
+  const sharedEmail = `voice-shared-${Date.now()}@example.test`;
+  const cookie = await login(sharedEmail);
+  shared = { cookie, link: await linkHome(sharedEmail) };
 });
 
 after(() => {
@@ -80,22 +79,29 @@ async function login(email) {
   return cookie.split(';')[0];
 }
 
-async function linkHome(cookie) {
-  const d = await (await fetch(`${BASE}/v1/ha/device`, { method: 'POST' })).json();
-  const approve = await fetch(`${BASE}/link`, {
+/**
+ * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
+ * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ */
+async function linkHome(email) {
+  await fetch(`${BASE}/register`, {
     method: 'POST',
-    headers: { origin: ORIGIN, cookie, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ user_code: d.user_code }),
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, password_confirm: HA_PASSWORD, next: '/account' }),
     redirect: 'manual',
   });
-  assert.equal(approve.status, 200, 'approval accepted');
-  const t = await fetch(`${BASE}/v1/ha/device/token`, {
+  await fetch(`${BASE}/v1/admin/approved-emails`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email, action: 'approve' }),
+  });
+  const res = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ device_code: d.device_code }),
+    body: JSON.stringify({ email, password: HA_PASSWORD }),
   });
-  assert.equal(t.status, 200, await t.clone().text());
-  return t.json();
+  assert.equal(res.status, 200, await res.clone().text());
+  return res.json();
 }
 
 /** Runs the account linking consent and returns an OAuth access token for the platform. */
@@ -324,8 +330,9 @@ test('voice: a malformed body is rejected with 400', async () => {
 });
 
 test('voice: when the home is offline, the platform gets 503 home_offline', async () => {
-  const cookie = await login(`voice-offline-${Date.now()}@example.test`);
-  await linkHome(cookie);
+  const email = `voice-offline-${Date.now()}@example.test`;
+  const cookie = await login(email);
+  await linkHome(email);
   const token = await accessToken(cookie, 'google');
   const res = await voiceRequest('/v1/voice/google', token, googleIntent('action.devices.SYNC'));
   assert.equal(res.status, 503);
@@ -362,7 +369,7 @@ test('voice: a home that does not answer in time gets 504 home_timeout', async (
 test('voice: a suspended home is refused with 402 and the platform sees no device data', async () => {
   const email = `voice-suspended-${Date.now()}@example.test`;
   const cookie = await login(email);
-  const link = await linkHome(cookie);
+  const link = await linkHome(email);
   const home = await connectHome(link.tunnel_token);
   const token = await accessToken(cookie, 'google');
 

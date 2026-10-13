@@ -19,18 +19,24 @@
     "PUBLIC_ORIGIN": "https://relay.mdtronix.online",
     "TUNNEL_PUBLIC_HOST": "relay.mdtronix.online",
     "INSTANCE_DOMAIN": "mdtronix.online",
-    "GOOGLE_CLIENT_ID": "67696384050-m4dlp3ic6ru0o81bbf3gbcc9skbh1iuo.apps.googleusercontent.com",
     // The Alexa account-linking client ID is public. It must match the value entered in the Alexa skill.
     "ALEXA_CLIENT_ID": "mdtronix-alexa",
-    // Secrets, set at deploy with `wrangler secret put`: GOOGLE_CLIENT_SECRET, SESSION_SECRET, ALEXA_CLIENT_SECRET.
+    // The skill's "Send Alexa Events" LWA client ID (Build > Permissions). Used with ALEXA_LWA_CLIENT_SECRET
+    // to authenticate proactive ChangeReport calls to Alexa's Event Gateway. Public, like the other client IDs.
+    "ALEXA_LWA_CLIENT_ID": "amzn1.application-oa2-client.8e06c6bc69054f1e8f8763242fbc6a0e",
+    // The Google Home account-linking client ID is public. It must match the value entered in the
+    // Home Developer Console's cloud-to-cloud integration (Account linking > OAuth client ID).
+    "GOOGLE_VOICE_CLIENT_ID": "mdtronix-cloud-google-024eae927ee03386",
+    // Secrets, set at deploy with `wrangler secret put`: ALEXA_CLIENT_SECRET, ALEXA_LWA_CLIENT_SECRET,
+    // GOOGLE_VOICE_CLIENT_SECRET.
     // DEV_LOGIN is never set here. It exists only in the local .dev.vars file.
   },
-  // Rate limits. Period is 60 seconds, the longest the binding supports for this setup. Keys are IPs or device codes.
+  // Rate limits. Period is 60 seconds, the longest the binding supports for this setup. Key is the caller's IP.
+  // RL_LOGIN is the website's /login and /register; RL_HA_LOGIN is the HA integration's own direct
+  // email+password login (POST /v1/ha/login) — split so one flow's volume can't starve the other.
   "ratelimits": [
-    { "name": "RL_DEVICE", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "RL_APPROVE", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
-    { "name": "RL_POLL", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
-    { "name": "RL_LOGIN", "namespace_id": "1004", "simple": { "limit": 20, "period": 60 } }
+    { "name": "RL_LOGIN", "namespace_id": "1004", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_HA_LOGIN", "namespace_id": "1005", "simple": { "limit": 20, "period": 60 } }
   ],
   "d1_databases": [
     {

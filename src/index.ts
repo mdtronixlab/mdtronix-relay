@@ -1,19 +1,21 @@
 // Relay entry point. Protocol: docs/remote-access/PROTOCOL.md in the SmartHome repo.
 //
 // Two kinds of host:
-//   relay.mdtronix.online       sign-in, device login, the tunnel endpoint
+//   relay.mdtronix.online       sign-in, HA login, the tunnel endpoint
 //   <subdomain>.mdtronix.online a customer's remote URL, proxied to their Home Assistant
 
-import { pollDeviceToken, createDeviceCode } from './device';
-import { finishSignIn, startSignIn } from './google';
+import { haLogin } from './ha_login';
+import { loginCustomer, loginPage, registerCustomer, registerPage } from './password_auth';
 import type { Env } from './env';
 import { jsonError } from './http';
 import { handleAdminHomes, handleAdminSubscription, handleListApprovedEmails, handleSetApprovedEmail } from './admin';
 import { authorizeGet, authorizePost, revokeEndpoint, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
-import { approveDevice, devApprovedCheck, devLogin, linkPage } from './web';
+import { devApprovedCheck, devLogin } from './web';
 import { alexaDirective, googleFulfillment } from './voice';
+import { alexaReportToken } from './alexa-events';
 import { accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
+import { privacyPage, termsPage } from './legal';
 
 export { TunnelDO } from './tunnel-do';
 
@@ -28,11 +30,14 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/account/sign-out' && method === 'POST') return accountSignOut(request, env);
   if (pathname === '/account/unlink-home' && method === 'POST') return accountUnlinkHome(request, env);
   if (pathname === '/account/unlink-voice' && method === 'POST') return accountUnlinkVoice(request, env);
+  if (pathname === '/privacy' && method === 'GET') return privacyPage(request, env);
+  if (pathname === '/terms' && method === 'GET') return termsPage(request, env);
 
   // HA login
-  if (pathname === '/v1/ha/device' && method === 'POST') return createDeviceCode(request, env);
-  if (pathname === '/v1/ha/device/token' && method === 'POST') return pollDeviceToken(request, env);
+  if (pathname === '/v1/ha/login' && method === 'POST') return haLogin(request, env);
   if (pathname === '/v1/ha/unlink' && method === 'POST') return unlink(request, env);
+  // Proactive Alexa state reporting: a short-lived token, authenticated by the home's own tunnel token.
+  if (pathname === '/v1/ha/alexa-report-token' && method === 'GET') return alexaReportToken(request, env);
 
   // Operator
   if (pathname === '/v1/admin/subscription' && method === 'POST') return handleAdminSubscription(request, env);
@@ -54,10 +59,10 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/v1/tunnel' && method === 'GET') return attachTunnel(request, env);
 
   // Customer browser
-  if (pathname === '/link' && method === 'GET') return linkPage(request, env);
-  if (pathname === '/link' && method === 'POST') return approveDevice(request, env);
-  if (pathname === '/v1/auth/google/start' && method === 'GET') return startSignIn(request, env);
-  if (pathname === '/v1/auth/google/callback' && method === 'GET') return finishSignIn(request, env);
+  if (pathname === '/login' && method === 'GET') return loginPage(request, env);
+  if (pathname === '/login' && method === 'POST') return loginCustomer(request, env);
+  if (pathname === '/register' && method === 'GET') return registerPage(request, env);
+  if (pathname === '/register' && method === 'POST') return registerCustomer(request, env);
 
   // Local development only. Returns 404 unless DEV_LOGIN is set.
   if (pathname === '/v1/dev/login' && method === 'GET') return devLogin(request, env);

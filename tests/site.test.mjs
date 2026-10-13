@@ -6,10 +6,12 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 8800;
+const PORT = 8797;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ORIGIN = 'https://relay.mdtronix.online';
-const GOOGLE = { clientId: 'google-test-client', clientSecret: 'google-test-secret', redirect: 'https://oauth-redirect.googleusercontent.com/r/mdtronix-ha-85262' };
+const GOOGLE = { clientId: 'google-test-client', clientSecret: 'google-test-secret', redirect: 'https://oauth-redirect.googleusercontent.com/r/mdtronix-cloud' };
+const ADMIN_TOKEN = 'testadmin';
+const HA_PASSWORD = 'correct horse battery staple';
 const cwd = fileURLToPath(new URL('..', import.meta.url));
 
 let dev;
@@ -34,11 +36,9 @@ before(async () => {
     [
       'wrangler', 'dev', '--port', String(PORT), '--local',
       '--var', 'DEV_LOGIN:true',
-      '--var', `SESSION_SECRET:${'t'.repeat(32)}`,
-      '--var', 'GOOGLE_CLIENT_ID:test',
-      '--var', 'GOOGLE_CLIENT_SECRET:test',
       '--var', `GOOGLE_VOICE_CLIENT_ID:${GOOGLE.clientId}`,
       '--var', `GOOGLE_VOICE_CLIENT_SECRET:${GOOGLE.clientSecret}`,
+      '--var', `ADMIN_TOKEN:${ADMIN_TOKEN}`,
     ],
     { cwd, shell: true, stdio: 'ignore' },
   );
@@ -73,22 +73,29 @@ async function post(path, cookie, body = {}) {
   });
 }
 
-async function linkHome(cookie) {
-  const d = await (await fetch(`${BASE}/v1/ha/device`, { method: 'POST' })).json();
-  const approve = await fetch(`${BASE}/link`, {
+/**
+ * Claims a password on the (already dev-logged-in) account, approves it, then signs HA in directly
+ * with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ */
+async function linkHome(email) {
+  await fetch(`${BASE}/register`, {
     method: 'POST',
-    headers: { origin: ORIGIN, cookie, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ user_code: d.user_code }),
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, password_confirm: HA_PASSWORD, next: '/account' }),
     redirect: 'manual',
   });
-  assert.equal(approve.status, 200);
-  const t = await fetch(`${BASE}/v1/ha/device/token`, {
+  await fetch(`${BASE}/v1/admin/approved-emails`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email, action: 'approve' }),
+  });
+  const res = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ device_code: d.device_code }),
+    body: JSON.stringify({ email, password: HA_PASSWORD }),
   });
-  assert.equal(t.status, 200, await t.clone().text());
-  return t.json();
+  assert.equal(res.status, 200, await res.clone().text());
+  return res.json();
 }
 
 /** Runs the Google Home consent flow and returns an access token, linking the platform to this customer. */
@@ -124,11 +131,12 @@ async function linkGoogleVoice(cookie) {
 
 // --- Homepage ----------------------------------------------------------
 
-test('homepage: offers Google sign-in when signed out, and the account link when signed in', async () => {
+test('homepage: offers to register when signed out, and the account link when signed in', async () => {
   const signedOut = await get('/');
   assert.equal(signedOut.status, 200);
   const outText = await signedOut.text();
-  assert.match(outText, /Get started with Google/);
+  assert.match(outText, /Get started/);
+  assert.match(outText, /href="\/register/);
   assert.match(outText, /Sign in/);
 
   const cookie = await login(`site-home-${Date.now()}@example.test`);
@@ -136,16 +144,16 @@ test('homepage: offers Google sign-in when signed out, and the account link when
   assert.equal(signedIn.status, 200);
   const inText = await signedIn.text();
   assert.match(inText, /Go to your account/);
-  assert.doesNotMatch(inText, /Get started with Google/);
+  assert.doesNotMatch(inText, /href="\/register/);
 });
 
 // --- Account: signed out --------------------------------------------------
 
-test('account page sends a signed-out visitor to Google sign-in, with next=/account', async () => {
+test('account page sends a signed-out visitor to sign in, with next=/account', async () => {
   const res = await get('/account');
   assert.equal(res.status, 302);
   const location = res.headers.get('location');
-  assert.match(location, /^\/v1\/auth\/google\/start\?next=%2Faccount$/);
+  assert.match(location, /^\/login\?next=%2Faccount$/);
 });
 
 // --- Account: signed in, nothing linked -----------------------------------
@@ -164,8 +172,9 @@ test('account page shows no home and no subscription for a brand new customer', 
 // --- Account: a linked home -------------------------------------------------
 
 test('account page shows the remote URL, trial status, and disconnects on request', async () => {
-  const cookie = await login(`site-home2-${Date.now()}@example.test`);
-  const link = await linkHome(cookie);
+  const email = `site-home2-${Date.now()}@example.test`;
+  const cookie = await login(email);
+  const link = await linkHome(email);
 
   const res = await get('/account', cookie);
   const text = await res.text();
@@ -229,5 +238,5 @@ test('signing out clears the session, so the account page asks to sign in again'
   // The old cookie is revoked server-side, not just cleared client-side.
   const after = await get('/account', cookie);
   assert.equal(after.status, 302);
-  assert.match(after.headers.get('location'), /^\/v1\/auth\/google\/start/);
+  assert.match(after.headers.get('location'), /^\/login/);
 });

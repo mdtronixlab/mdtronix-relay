@@ -1,7 +1,6 @@
 // Response helpers and cookie handling.
 
 export const SESSION_COOKIE = '__Host-mdt_session';
-export const STATE_COOKIE = '__Host-mdt_oauth';
 
 export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -57,6 +56,6 @@ export function esc(text: string): string {
 
 /** Only same-site relative paths are allowed as a post-login destination. */
 export function safeNext(next: string | null): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/link';
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/account';
   return next;
 }

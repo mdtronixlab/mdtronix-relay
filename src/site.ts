@@ -1,6 +1,6 @@
 // The public site: the "/" landing page and "/account", where a customer signs in on their own,
-// outside the Home Assistant device-login flow (that flow is in web.ts). There's no separate sign-up:
-// Google sign-in creates the account on first use, the same as it does from /link.
+// outside the Home Assistant device-login flow (that flow is in web.ts). Registration and sign-in
+// themselves live in password_auth.ts (/register, /login); this file just links to them.
 
 import { nowSeconds } from './crypto';
 import type { Env } from './env';
@@ -38,11 +38,11 @@ button.link { background: none; border: none; color: #1a5fb4; padding: 0; text-d
 button.danger { background: #fff; border: 1px solid #c4281b; color: #c4281b; border-radius: .4rem; padding: .5rem 1rem; }
 `;
 
-function shell(title: string, customer: { email: string } | null, body: string): string {
+export function shell(title: string, customer: { email: string } | null, body: string): string {
   const nav = customer
     ? `<span class="who">${esc(customer.email)}</span> <a href="/account">Account</a> ` +
       `<form method="post" action="/account/sign-out" class="inline"><button class="link" type="submit">Sign out</button></form>`
-    : `<a href="/v1/auth/google/start?next=${encodeURIComponent('/account')}">Sign in</a>`;
+    : `<a href="/login?next=${encodeURIComponent('/account')}">Sign in</a>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
@@ -68,7 +68,7 @@ export async function homePage(request: Request, env: Env): Promise<Response> {
   const customer = await signedInCustomer(request, env.CUSTOMERS);
   const cta = customer
     ? `<a class="btn" href="/account">Go to your account</a>`
-    : `<a class="btn" href="/v1/auth/google/start?next=${encodeURIComponent('/account')}">Get started with Google</a>`;
+    : `<a class="btn" href="/register?next=${encodeURIComponent('/account')}">Get started</a>`;
 
   const body = `
 <section class="hero">
@@ -85,9 +85,9 @@ export async function homePage(request: Request, env: Env): Promise<Response> {
 <section class="steps">
   <h2>How it works</h2>
   <ol>
+    <li>Create an account above, and wait for MDtronix to approve it.</li>
     <li>Install the <strong>MDtronix Cloud</strong> integration in Home Assistant, from HACS or manually.</li>
-    <li>Start setup. Home Assistant shows a short code and a link.</li>
-    <li>Sign in with Google and enter the code to connect.</li>
+    <li>Start setup, and sign in with the same email and password. No code to copy.</li>
   </ol>
 </section>`;
   return html(200, shell('MDtronix Cloud', customer, body));
@@ -115,7 +115,7 @@ function subscriptionSummary(sub: SubscriptionRow | null, now: number): { label:
 /** GET /account. Signs the customer in first if they aren't already. */
 export async function accountPage(request: Request, env: Env): Promise<Response> {
   const customer = await signedInCustomer(request, env.CUSTOMERS);
-  if (!customer) return redirect(`/v1/auth/google/start?next=${encodeURIComponent('/account')}`);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
 
   const instance = await env.CUSTOMERS.prepare('SELECT subdomain FROM instances WHERE customer_id = ?')
     .bind(customer.id)
@@ -145,7 +145,7 @@ export async function accountPage(request: Request, env: Env): Promise<Response>
   let homeCard: string;
   if (!instance) {
     homeCard = `<p>No Home Assistant connected yet.</p>
-<p>Install the <strong>MDtronix Cloud</strong> integration from HACS, start setup, and enter the code at <a href="/link">/link</a>.</p>`;
+<p>Install the <strong>MDtronix Cloud</strong> integration from HACS, start setup, and sign in with your MDtronix Cloud email and password.</p>`;
   } else if (!hasToken) {
     homeCard = `<p>This home was disconnected.</p>
 <p>Start setup again in Home Assistant to reconnect it. It will reuse <a href="https://${esc(remoteUrl)}">${esc(remoteUrl)}</a>.</p>`;
@@ -192,7 +192,7 @@ export async function accountUnlinkHome(request: Request, env: Env): Promise<Res
   const denied = checkOrigin(request, env);
   if (denied) return denied;
   const customer = await signedInCustomer(request, env.CUSTOMERS);
-  if (!customer) return redirect(`/v1/auth/google/start?next=${encodeURIComponent('/account')}`);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
   await unlinkForCustomer(env, customer.id);
   return redirect('/account');
 }
@@ -202,7 +202,7 @@ export async function accountUnlinkVoice(request: Request, env: Env): Promise<Re
   const denied = checkOrigin(request, env);
   if (denied) return denied;
   const customer = await signedInCustomer(request, env.CUSTOMERS);
-  if (!customer) return redirect(`/v1/auth/google/start?next=${encodeURIComponent('/account')}`);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
 
   const form = await request.formData();
   const platform = form.get('platform');

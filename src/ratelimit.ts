@@ -4,7 +4,7 @@
 import type { Env } from './env';
 import { jsonError } from './http';
 
-export type Limiter = 'RL_DEVICE' | 'RL_APPROVE' | 'RL_POLL' | 'RL_LOGIN';
+export type Limiter = 'RL_LOGIN' | 'RL_HA_LOGIN';
 
 /** Client IP as Cloudflare reports it. Falls back to a shared key when running locally. */
 export function clientKey(request: Request): string {

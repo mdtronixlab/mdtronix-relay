@@ -17,10 +17,15 @@ interface AuthParams {
   clientId: string;
   redirectUri: string;
   state: string;
-  codeChallenge: string;
+  codeChallenge: string | null;
 }
 
 type ParseResult = { ok: true; value: AuthParams } | { ok: false; message: string };
+
+// Alexa's account linking sends PKCE and is required to. Google's own account-linking flow (the Google
+// Home app, replacing the legacy Actions on Google redirect) authenticates with its client secret alone
+// and never sends a code_challenge, so PKCE is accepted there but not required.
+const PKCE_REQUIRED: Record<Platform, boolean> = { alexa: true, google: false };
 
 /** Validates an authorization request. A bad client or redirect URI is never redirected to. */
 function parseAuthParams(params: URLSearchParams, env: Env): ParseResult {
@@ -33,7 +38,15 @@ function parseAuthParams(params: URLSearchParams, env: Env): ParseResult {
     return { ok: false, message: 'The redirect address does not match this platform.' };
   }
   if (params.get('response_type') !== 'code') return { ok: false, message: 'Only response_type=code is supported.' };
-  if (params.get('code_challenge_method') !== 'S256' || !params.get('code_challenge')) {
+
+  // An empty string (e.g. a round-tripped hidden form field for a request that never had PKCE) counts
+  // as absent, same as a missing param.
+  const codeChallenge = params.get('code_challenge') || null;
+  if (codeChallenge) {
+    if (params.get('code_challenge_method') !== 'S256') {
+      return { ok: false, message: 'PKCE with S256 is required.' };
+    }
+  } else if (PKCE_REQUIRED[platform]) {
     return { ok: false, message: 'PKCE with S256 is required.' };
   }
   return {
@@ -43,7 +56,7 @@ function parseAuthParams(params: URLSearchParams, env: Env): ParseResult {
       clientId,
       redirectUri,
       state: params.get('state') ?? '',
-      codeChallenge: params.get('code_challenge') ?? '',
+      codeChallenge,
     },
   };
 }
@@ -74,7 +87,7 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
   if (!parsed.ok) return html(400, page('Cannot link', `<p class="err">${esc(parsed.message)}</p>`));
 
   const customer = await signedInCustomer(request, env.CUSTOMERS);
-  if (!customer) return redirect(`/v1/auth/google/start?next=${encodeURIComponent(url.pathname + url.search)}`);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`);
 
   const v = parsed.value;
   const platformName = PLATFORMS[v.platform].name;
@@ -88,8 +101,8 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
   <input type="hidden" name="client_id" value="${esc(v.clientId)}">
   <input type="hidden" name="redirect_uri" value="${esc(v.redirectUri)}">
   <input type="hidden" name="state" value="${esc(v.state)}">
-  <input type="hidden" name="code_challenge" value="${esc(v.codeChallenge)}">
-  <input type="hidden" name="code_challenge_method" value="S256">
+  <input type="hidden" name="code_challenge" value="${esc(v.codeChallenge ?? '')}">
+  <input type="hidden" name="code_challenge_method" value="${v.codeChallenge ? 'S256' : ''}">
   <input type="hidden" name="response_type" value="code">
   <button type="submit" name="decision" value="allow">Allow</button>
   <button type="submit" name="decision" value="deny">Deny</button>
@@ -184,8 +197,10 @@ export async function tokenEndpoint(request: Request, env: Env): Promise<Respons
 async function exchangeCode(form: FormData, platform: Platform, env: Env): Promise<Response> {
   const code = String(form.get('code') ?? '');
   const redirectUri = String(form.get('redirect_uri') ?? '');
-  const verifier = String(form.get('code_verifier') ?? '');
-  if (!code || !verifier) return jsonError(400, 'invalid_request');
+  // Only Alexa's codes carry a PKCE challenge (see PKCE_REQUIRED in parseAuthParams); Google's don't, so
+  // a verifier is only required when the stored code actually has a challenge to check it against.
+  const verifier = form.get('code_verifier');
+  if (!code) return jsonError(400, 'invalid_request');
 
   const now = nowSeconds();
   const row = await env.CUSTOMERS.prepare(
@@ -197,7 +212,7 @@ async function exchangeCode(form: FormData, platform: Platform, env: Env): Promi
       platform: string;
       customer_id: string;
       redirect_uri: string;
-      code_challenge: string;
+      code_challenge: string | null;
       expires_at: number;
       used_at: number | null;
     }>();
@@ -205,7 +220,11 @@ async function exchangeCode(form: FormData, platform: Platform, env: Env): Promi
     return jsonError(400, 'invalid_grant');
   }
   if (row.redirect_uri !== redirectUri) return jsonError(400, 'invalid_grant');
-  if ((await sha256Base64Url(verifier)) !== row.code_challenge) return jsonError(400, 'invalid_grant');
+  if (row.code_challenge) {
+    if (!verifier || (await sha256Base64Url(String(verifier))) !== row.code_challenge) {
+      return jsonError(400, 'invalid_grant');
+    }
+  }
 
   // Mark the code used before issuing anything, so a replayed code can't get a second grant.
   const claim = await env.CUSTOMERS.prepare('UPDATE oauth_codes SET used_at = ? WHERE id = ? AND used_at IS NULL')

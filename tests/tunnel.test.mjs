@@ -37,9 +37,6 @@ before(async () => {
     [
       'wrangler', 'dev', '--port', String(PORT), '--local',
       '--var', 'DEV_LOGIN:true',
-      '--var', `SESSION_SECRET:${'t'.repeat(32)}`,
-      '--var', 'GOOGLE_CLIENT_ID:test',
-      '--var', 'GOOGLE_CLIENT_SECRET:test',
       '--var', 'ADMIN_TOKEN:testadmin',
     ],
     { cwd: fileURLToPath(new URL('..', import.meta.url)), shell: true, stdio: 'ignore' },
@@ -56,31 +53,32 @@ after(() => {
 
 // --- helpers --------------------------------------------------------------
 
-async function login(email) {
-  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  const cookie = r.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
-  assert.ok(cookie, 'dev login set a session cookie');
-  return cookie.split(';')[0];
-}
+const HA_PASSWORD = 'correct horse battery staple';
+const ADMIN_TOKEN = 'testadmin';
 
-async function linkHome(cookie, replace = false) {
-  const d = await (await fetch(`${BASE}/v1/ha/device`, { method: 'POST' })).json();
-  const form = new URLSearchParams({ user_code: d.user_code });
-  if (replace) form.set('replace', 'on');
-  const approve = await fetch(`${BASE}/link`, {
+/**
+ * Registers (or, on a second call for the same email, just reuses) a password-auth account, approves it,
+ * then signs HA in directly with POST /v1/ha/login — the flow the mdtronix_cloud integration itself uses.
+ */
+async function linkHome(email, replace = false) {
+  await fetch(`${BASE}/register`, {
     method: 'POST',
-    headers: { origin: ORIGIN, cookie, 'content-type': 'application/x-www-form-urlencoded' },
-    body: form,
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password: HA_PASSWORD, password_confirm: HA_PASSWORD, next: '/account' }),
     redirect: 'manual',
+  }); // ignored: a relink's second call here just re-hits "already exists", which is fine.
+  await fetch(`${BASE}/v1/admin/approved-emails`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email, action: 'approve' }),
   });
-  assert.equal(approve.status, 200, 'approval accepted');
-  const t = await fetch(`${BASE}/v1/ha/device/token`, {
+  const res = await fetch(`${BASE}/v1/ha/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ device_code: d.device_code }),
+    body: JSON.stringify({ email, password: HA_PASSWORD, replace }),
   });
-  assert.equal(t.status, 200, await t.clone().text());
-  return t.json();
+  assert.equal(res.status, 200, await res.clone().text());
+  return res.json();
 }
 
 function connectHa(token) {
@@ -182,10 +180,10 @@ function once(emitter, event) {
 // --- the test ---------------------------------------------------------------
 
 test('tunnel: link, proxy HTTP and WebSocket, unlink, relink', async () => {
-  const cookie = await login(`tunnel-${Date.now()}@example.test`);
+  const email = `tunnel-${Date.now()}@example.test`;
 
   // 1. Link the home and connect HA.
-  const first = await linkHome(cookie);
+  const first = await linkHome(email);
   const sub = first.subdomain;
   assert.match(sub, /^[a-z0-9]{10}$/);
 
@@ -229,7 +227,7 @@ test('tunnel: link, proxy HTTP and WebSocket, unlink, relink', async () => {
   await assert.rejects(connectHa(first.tunnel_token), /status 401/);
 
   // 7. Relink with Replace: a new token and the same subdomain, and HA works again.
-  const second = await linkHome(cookie, true);
+  const second = await linkHome(email, true);
   assert.equal(second.subdomain, sub);
   assert.notEqual(second.tunnel_token, first.tunnel_token);
   const ha2 = await connectHa(second.tunnel_token);
@@ -249,8 +247,7 @@ async function adminSubscription(token, body) {
 
 test("subscription: suspend blocks access, reconnect is refused, activate restores", async () => {
   const email = `billing-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  const link = await linkHome(cookie);
+  const link = await linkHome(email);
   const sub = link.subdomain;
 
   // The trial starts at first link, so the home works right away.
@@ -285,8 +282,7 @@ test("subscription: suspend blocks access, reconnect is refused, activate restor
 
 test("admin: homes list needs the token and shows access status", async () => {
   const email = `homes-${Date.now()}@example.test`;
-  const cookie = await login(email);
-  const link = await linkHome(cookie);
+  const link = await linkHome(email);
 
   const denied = await fetch(`${BASE}/v1/admin/homes`, { headers: { authorization: "Bearer wrong" } });
   assert.equal(denied.status, 401);
