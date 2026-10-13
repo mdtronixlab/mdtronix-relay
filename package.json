@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-concurrency=1 tests/tunnel.test.mjs tests/oauth.test.mjs tests/voice.test.mjs tests/site.test.mjs tests/approval.test.mjs tests/alexa-events.test.mjs tests/password_auth.test.mjs alexa-forwarder/index.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/tunnel.test.mjs tests/oauth.test.mjs tests/voice.test.mjs tests/site.test.mjs tests/approval.test.mjs tests/alexa-events.test.mjs tests/google-report.test.mjs tests/password_auth.test.mjs alexa-forwarder/index.test.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply mdtronix-customers --local",
     "d1:migrate:remote": "wrangler d1 migrations apply mdtronix-customers --remote"
   },

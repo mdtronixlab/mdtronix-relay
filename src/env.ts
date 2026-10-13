@@ -21,6 +21,11 @@ export interface Env {
   ALEXA_LWA_CLIENT_ID?: string;
   /** Secret: `wrangler secret put ALEXA_LWA_CLIENT_SECRET`. */
   ALEXA_LWA_CLIENT_SECRET?: string;
+  /** Service account for Google Home proactive state reporting (Home Graph API), project mdtronix-cloud.
+   *  The client_email from the service account's JSON key (public-ish, but keep both as secrets together). */
+  GOOGLE_HOMEGRAPH_CLIENT_EMAIL?: string;
+  /** Secret: the service account JSON key's private_key field (PEM), `wrangler secret put GOOGLE_HOMEGRAPH_PRIVATE_KEY`. */
+  GOOGLE_HOMEGRAPH_PRIVATE_KEY?: string;
   /** Rate-limit bindings, declared in wrangler.jsonc. */
   RL_LOGIN: RateLimit;
   RL_HA_LOGIN: RateLimit;

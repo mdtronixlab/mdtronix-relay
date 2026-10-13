@@ -3,7 +3,11 @@
 
 import { randomBytes, bytesToBase64Url, base64UrlToBytes } from './crypto';
 
-const ITERATIONS = 210_000;
+// Cloudflare Workers' PBKDF2 implementation caps iterations at 100,000 (crypto.subtle.deriveBits throws
+// above that, unlike a browser) — confirmed in production: "Pbkdf2 failed: iteration counts above 100000
+// are not supported". 100,000 is still the long-standing OWASP baseline, just not their newer 210,000
+// recommendation, which Workers can't do.
+const ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 

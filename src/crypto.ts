@@ -78,3 +78,37 @@ export async function constantTimeEqual(a: string, b: string): Promise<boolean> 
   for (let i = 0; i < ha.length; i++) diff |= ha.charCodeAt(i) ^ hb.charCodeAt(i);
   return diff === 0;
 }
+
+/**
+ * Decodes a PEM block (PKCS8 private key, standard base64) to its raw DER bytes. Strips both real
+ * whitespace and literal backslash-n sequences, since a service account key pasted straight from its
+ * JSON file (where newlines are the JSON escape "\n", not actual newline bytes) carries the latter.
+ */
+function pemToDer(pem: string): Uint8Array {
+  const base64 = pem
+    .replace(/-----(BEGIN|END) PRIVATE KEY-----/g, '')
+    .replace(/\\n/g, '')
+    .replace(/\s+/g, '');
+  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+}
+
+/**
+ * Signs a Google service-account JWT (RS256), for the OAuth2 JWT-bearer grant
+ * (https://developers.google.com/identity/protocols/oauth2/service-account). `claims` becomes the JWT
+ * payload as-is; the caller supplies iss/scope/aud/iat/exp.
+ */
+export async function signGoogleServiceAccountJwt(privateKeyPem: string, claims: Record<string, unknown>): Promise<string> {
+  const header = bytesToBase64Url(new TextEncoder().encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
+  const body = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(claims)));
+  const unsigned = `${header}.${body}`;
+
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    pemToDer(privateKeyPem),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned));
+  return `${unsigned}.${bytesToBase64Url(new Uint8Array(signature))}`;
+}
