@@ -10,6 +10,7 @@ import type { Env } from './env';
 import { json, jsonError } from './http';
 import { hashPassword } from './password';
 import { MIN_PASSWORD_LENGTH } from './password_auth';
+import { revokeAllSessions } from './web';
 
 /** Checks the operator bearer token. Returns an error response, or null when the caller is allowed. */
 async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
@@ -166,9 +167,13 @@ export async function handleSetPassword(request: Request, env: Env): Promise<Res
   }
 
   const email = body.email.trim().toLowerCase();
-  const result = await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE email = ?')
-    .bind(await hashPassword(body.password), nowSeconds(), email)
+  const customer = await env.CUSTOMERS.prepare('SELECT id FROM customers WHERE email = ?').bind(email).first<{ id: string }>();
+  if (!customer) return jsonError(404, 'not_found');
+
+  await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .bind(await hashPassword(body.password), nowSeconds(), customer.id)
     .run();
-  if (result.meta.changes !== 1) return jsonError(404, 'not_found');
+  // A reset should lock out whoever has the old session, not just whoever doesn't know the new password.
+  await revokeAllSessions(env.CUSTOMERS, customer.id);
   return json(200, { ok: true });
 }

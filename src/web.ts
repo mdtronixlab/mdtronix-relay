@@ -51,6 +51,18 @@ export async function signOut(request: Request, db: D1Database): Promise<string[
 }
 
 /**
+ * Revokes every one of a customer's active sessions. Used when their password changes (the admin
+ * set-password endpoint), so a reset after a suspected takeover actually locks out whoever has the old
+ * session — not just whoever doesn't know the new password.
+ */
+export async function revokeAllSessions(db: D1Database, customerId: string): Promise<void> {
+  await db
+    .prepare('UPDATE web_sessions SET revoked_at = ? WHERE customer_id = ? AND revoked_at IS NULL')
+    .bind(nowSeconds(), customerId)
+    .run();
+}
+
+/**
  * GET /v1/dev/login?email=…. Signs in a test customer with no Google account.
  * Returns 404 unless DEV_LOGIN is "true", which is only set in the local .dev.vars file.
  */

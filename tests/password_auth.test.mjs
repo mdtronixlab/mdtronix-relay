@@ -202,6 +202,32 @@ test('admin set-password gives a passwordless legacy account (or a locked-out cu
   assert.ok(sessionCookie(after));
 });
 
+test('admin set-password revokes the customer\'s existing sessions, not just the password', async () => {
+  const email = `takeover-${Date.now()}@example.test`;
+  await register({ email, password: 'original password', password_confirm: 'original password' });
+  await approve(email);
+
+  const signedIn = await login({ email, password: 'original password' });
+  const cookie = sessionCookie(signedIn);
+  assert.ok(cookie, 'signed in with a session cookie');
+
+  // The session works before the reset.
+  const before = await fetch(`${BASE}/account`, { headers: { cookie } });
+  assert.equal(before.status, 200);
+
+  await setPassword(email, 'a brand new password');
+
+  // The old session is dead, even though it was never explicitly signed out.
+  const after = await fetch(`${BASE}/account`, { headers: { cookie }, redirect: 'manual' });
+  assert.equal(after.status, 302);
+  assert.match(after.headers.get('location'), /^\/login\?next=/);
+
+  // The new password works, and gets a fresh session.
+  const reLogin = await login({ email, password: 'a brand new password' });
+  assert.equal(reLogin.status, 302);
+  assert.ok(sessionCookie(reLogin));
+});
+
 test('admin set-password requires the admin token and a real email and valid-length password', async () => {
   const email = `setpw-guard-${Date.now()}@example.test`;
   await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
