@@ -58,10 +58,8 @@ function pkce() {
   return { verifier, challenge };
 }
 
-async function signedInCookie() {
-  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(`voice-${Date.now()}@example.test`)}`, {
-    redirect: 'manual',
-  });
+async function signedInCookie(email = `voice-${Date.now()}@example.test`) {
+  const r = await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
   return r.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session=')).split(';')[0];
 }
 
@@ -239,6 +237,50 @@ test('voice linking: Google (and only Google) may skip PKCE entirely', async () 
   // Unknown client either way (not registered in this test env), but confirms the request is rejected
   // before PKCE would even be reached, since Alexa's requirement is independent of this test's client.
   assert.equal(alexaNoPkce.status, 400);
+});
+
+test('voice linking: consent page shows the signed-in email and can switch to a different account', async () => {
+  const emailA = `voice-a-${Date.now()}@example.test`;
+  const emailB = `voice-b-${Date.now()}@example.test`;
+  const cookieA = await signedInCookie(emailA);
+  const { challenge } = pkce();
+  const params = authorizeParams(challenge);
+
+  // The consent page shows which account is signed in.
+  const pageA = await fetch(`${BASE}/oauth/authorize?${params}`, { headers: { cookie: cookieA } });
+  assert.equal(pageA.status, 200);
+  assert.match(await pageA.text(), new RegExp(`Signed in as ${emailA}`));
+
+  // "Not you?" signs the current session out and sends the browser back to /login with the original
+  // authorize request preserved, instead of silently staying on account A.
+  const authorizePath = `/oauth/authorize?${params}`;
+  const switchForm = new URLSearchParams({ next: authorizePath });
+  const switchRes = await fetch(`${BASE}/oauth/switch-account`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, cookie: cookieA, 'content-type': 'application/x-www-form-urlencoded' },
+    body: switchForm,
+    redirect: 'manual',
+  });
+  assert.equal(switchRes.status, 302);
+  const loc = new URL(switchRes.headers.get('location'), BASE);
+  assert.equal(loc.pathname, '/login');
+  assert.equal(loc.searchParams.get('next'), authorizePath);
+  const clearedCookie = switchRes.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
+  assert.ok(clearedCookie, 'session cookie cleared');
+
+  // The old cookie is revoked, not just cleared client-side: re-using it no longer counts as signed in.
+  const afterSwitch = await fetch(`${BASE}/oauth/authorize?${params}`, {
+    headers: { cookie: cookieA },
+    redirect: 'manual',
+  });
+  assert.equal(afterSwitch.status, 302);
+  assert.match(afterSwitch.headers.get('location'), /^\/login\?next=/);
+
+  // Signing in as a different account and completing consent links that account, not the first one.
+  const cookieB = await signedInCookie(emailB);
+  const pageB = await fetch(`${BASE}/oauth/authorize?${params}`, { headers: { cookie: cookieB } });
+  assert.equal(pageB.status, 200);
+  assert.match(await pageB.text(), new RegExp(`Signed in as ${emailB}`));
 });
 
 test('voice linking: deny returns access_denied and issues no code', async () => {

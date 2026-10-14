@@ -116,7 +116,7 @@ test('registering with an email that is already approved signs in immediately', 
   assert.ok(sessionCookie(reg), 'pre-approved registration signs in right away');
 });
 
-test('wrong password, unknown email, and a suspended-sounding generic message are indistinguishable', async () => {
+test('login errors say specifically which of email or password was wrong', async () => {
   const email = `wrongpw-${Date.now()}@example.test`;
   await approve(email);
   await register({ email, password: 'correct horse', password_confirm: 'correct horse' });
@@ -125,8 +125,22 @@ test('wrong password, unknown email, and a suspended-sounding generic message ar
   const unknownEmail = await login({ email: `nobody-${Date.now()}@example.test`, password: 'whatever1' });
   assert.equal(wrongPassword.status, 400);
   assert.equal(unknownEmail.status, 400);
-  assert.match(await wrongPassword.text(), /Incorrect email or password/);
-  assert.match(await unknownEmail.text(), /Incorrect email or password/);
+  const wrongPasswordText = await wrongPassword.text();
+  const unknownEmailText = await unknownEmail.text();
+  assert.match(wrongPasswordText, /Incorrect password\./);
+  assert.doesNotMatch(wrongPasswordText, /No account exists/);
+  assert.match(unknownEmailText, /No account exists with that email\./);
+  assert.doesNotMatch(unknownEmailText, /Incorrect password/);
+});
+
+test('a passwordless legacy account gets its own specific login error', async () => {
+  const email = `no-pw-${Date.now()}@example.test`;
+  await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+  await approve(email);
+
+  const attempt = await login({ email, password: 'whatever it is' });
+  assert.equal(attempt.status, 400);
+  assert.match(await attempt.text(), /no password set yet/);
 });
 
 test('registration is refused for a short password, a mismatched confirmation, or a duplicate email', async () => {
@@ -159,7 +173,7 @@ test('registering over a passwordless existing row (e.g. a leftover Google sign-
   await approve(email);
   const attempt = await login({ email, password: 'correct horse' });
   assert.equal(attempt.status, 400, 'the password was never actually set, so this is not a valid login either');
-  assert.match(await attempt.text(), /Incorrect email or password/);
+  assert.match(await attempt.text(), /no password set yet/);
 });
 
 function setPassword(email, password, token = ADMIN_TOKEN) {

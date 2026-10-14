@@ -114,6 +114,33 @@ test('a malformed email or an unknown action is refused', async () => {
   assert.equal((await adminPost({ email: 'ok@example.test', action: 'delete' })).status, 400);
 });
 
+function pendingCustomers(token = ADMIN_TOKEN) {
+  return fetch(`${BASE}/v1/admin/pending-customers`, { headers: { authorization: `Bearer ${token}` } });
+}
+
+test('a registered, unapproved customer shows up in pending-customers; approving removes them', async () => {
+  const email = `pending-${Date.now()}@example.test`;
+  await fetch(`${BASE}/v1/dev/login?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+
+  const before = await (await pendingCustomers()).json();
+  assert.ok(
+    before.customers.some((c) => c.email === email.toLowerCase()),
+    'the unapproved customer is listed',
+  );
+
+  await adminPost({ email, action: 'approve' });
+  const after = await (await pendingCustomers()).json();
+  assert.ok(
+    !after.customers.some((c) => c.email === email.toLowerCase()),
+    'approving the email drops them from the pending list',
+  );
+});
+
+test('pending-customers requires the admin token', async () => {
+  assert.equal((await pendingCustomers('wrong')).status, 401);
+  assert.equal((await fetch(`${BASE}/v1/admin/pending-customers`)).status, 401);
+});
+
 test('the admin list shows the newest approvals first', async () => {
   const first = `list-a-${Date.now()}@example.test`;
   const second = `list-b-${Date.now()}@example.test`;

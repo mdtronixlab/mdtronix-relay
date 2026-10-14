@@ -37,6 +37,26 @@ export async function handleAdminHomes(request: Request, env: Env): Promise<Resp
   return json(200, { homes: rows.results });
 }
 
+/**
+ * GET /v1/admin/pending-customers. Registered customers who aren't on the approved_emails allowlist yet,
+ * newest first. Without this, a customer who registers on the website before staff pre-approved them (the
+ * normal flow — see approved_emails's comment) is invisible to the CRM: they have no instance yet (an
+ * unapproved customer can never reach HA login to get one), so handleAdminHomes never shows them either.
+ */
+export async function handleAdminPendingCustomers(request: Request, env: Env): Promise<Response> {
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
+
+  const rows = await env.CUSTOMERS.prepare(
+    `SELECT c.email, c.status AS account_status, c.created_at
+     FROM customers c
+     WHERE NOT EXISTS (SELECT 1 FROM approved_emails a WHERE a.email = c.email)
+     ORDER BY c.created_at DESC
+     LIMIT 500`,
+  ).all();
+  return json(200, { customers: rows.results });
+}
+
 export async function handleAdminSubscription(request: Request, env: Env): Promise<Response> {
   const denied = await requireAdmin(request, env);
   if (denied) return denied;

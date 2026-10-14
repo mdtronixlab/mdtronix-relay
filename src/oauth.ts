@@ -7,7 +7,7 @@ import { base64UrlToBytes, constantTimeEqual, nowSeconds, randomId, randomToken,
 import type { Env } from './env';
 import { esc, html, json, jsonError, redirect } from './http';
 import { PLATFORMS, platformForClientId, secretForPlatform, type Platform } from './oauth-clients';
-import { signedInCustomer } from './web';
+import { signedInCustomer, signOut } from './web';
 
 const CODE_TTL_SECONDS = 60;
 export const ACCESS_TTL_SECONDS = 3600;
@@ -69,6 +69,9 @@ function page(title: string, body: string): string {
 body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; padding: 0 1rem; color: #111; }
 button { font-size: 1rem; padding: .6rem 1.2rem; margin: .5rem .5rem 0 0; }
 .err { color: #b00020; }
+.fine { color: #666; font-size: .85rem; }
+form.inline { display: inline; margin: 0; }
+button.link { background: none; border: none; color: #1a5fb4; padding: 0; font-size: inherit; text-decoration: underline; cursor: pointer; }
 </style></head><body>${body}</body></html>`;
 }
 
@@ -91,12 +94,18 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
 
   const v = parsed.value;
   const platformName = PLATFORMS[v.platform].name;
+  const authorizePath = url.pathname + url.search;
   return html(
     200,
     page(
       `Link ${platformName}`,
       `<h1>Link ${esc(platformName)}</h1>
 <p>${esc(platformName)} will be able to control the devices in your Home Assistant through MDtronix.</p>
+<p class="fine">Signed in as ${esc(customer.email)}.
+<form method="post" action="/oauth/switch-account" class="inline">
+  <input type="hidden" name="next" value="${esc(authorizePath)}">
+  <button class="link" type="submit">Not you? Sign in with a different account</button>
+</form></p>
 <form method="post" action="/oauth/authorize">
   <input type="hidden" name="client_id" value="${esc(v.clientId)}">
   <input type="hidden" name="redirect_uri" value="${esc(v.redirectUri)}">
@@ -109,6 +118,19 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
 </form>`,
     ),
   );
+}
+
+/** POST /oauth/switch-account. Signs the current customer out so /login shows the form again, then sends
+ * the browser back into the authorize flow it came from. Used by the "Not you?" link on the consent page,
+ * since a webview that already has a session cookie would otherwise skip straight past /login. */
+export async function switchAccount(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get('origin') !== env.PUBLIC_ORIGIN) {
+    return html(403, page('Not allowed', '<p class="err">This request came from another site.</p>'));
+  }
+  const form = await request.formData();
+  const next = String(form.get('next') ?? '/account');
+  const cookies = await signOut(request, env.CUSTOMERS);
+  return redirect(`/login?next=${encodeURIComponent(next)}`, cookies);
 }
 
 /** POST /oauth/authorize: the customer's decision. Allowing creates a single-use code. */

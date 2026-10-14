@@ -136,12 +136,17 @@ export async function registerCustomer(request: Request, env: Env): Promise<Resp
 
 export type AuthResult =
   | { ok: true; customerId: string }
-  | { ok: false; reason: 'invalid_credentials' | 'not_approved' | 'account_suspended' };
+  | { ok: false; reason: 'unknown_email' | 'no_password' | 'wrong_password' | 'not_approved' | 'account_suspended' };
 
 /**
  * Verifies email+password and the approval gate. Shared by POST /login (this file, a browser session) and
  * the HA integration's direct login (src/ha_login.ts, a tunnel token instead of a session) — both are
  * "prove you're this customer," just with a different thing issued at the end.
+ *
+ * Deliberately reveals which of email/password was wrong (2026-10-14, the owner's call): this trades away
+ * the account-enumeration protection the single "invalid_credentials" reason used to give, in exchange for
+ * a login page that can say what's actually wrong — including the passwordless-legacy-account case, which
+ * a generic "wrong password" would otherwise misstate.
  */
 export async function authenticateCustomer(db: D1Database, email: string, password: string): Promise<AuthResult> {
   const normalized = normalizeEmail(email);
@@ -150,13 +155,13 @@ export async function authenticateCustomer(db: D1Database, email: string, passwo
     .bind(normalized)
     .first<{ id: string; password_hash: string | null; status: string }>();
 
-  // Always run verifyPassword, against the real hash if there is one or the dummy if not, so this takes
-  // the same time either way — same reason whether the email is unknown or the password is wrong, so a
-  // failed attempt doesn't reveal which account exists, including through response timing.
-  const passwordOk = await verifyPassword(password, row?.password_hash ?? DUMMY_HASH);
-  if (!row || !row.password_hash || !passwordOk) {
-    return { ok: false, reason: 'invalid_credentials' };
+  if (!row) {
+    // Still pay PBKDF2's cost even for an unknown email, so this path isn't trivially cheaper to probe.
+    await verifyPassword(password, DUMMY_HASH);
+    return { ok: false, reason: 'unknown_email' };
   }
+  if (!row.password_hash) return { ok: false, reason: 'no_password' };
+  if (!(await verifyPassword(password, row.password_hash))) return { ok: false, reason: 'wrong_password' };
   if (row.status !== 'active') return { ok: false, reason: 'account_suspended' };
 
   // The repo this integration comes from is public, so this is what keeps a stranger who registers an
@@ -192,7 +197,9 @@ export async function loginCustomer(request: Request, env: Env): Promise<Respons
       );
     }
     if (auth.reason === 'account_suspended') return reRender('This account is suspended. Contact support.');
-    return reRender('Incorrect email or password.');
+    if (auth.reason === 'unknown_email') return reRender('No account exists with that email.');
+    if (auth.reason === 'no_password') return reRender('This account has no password set yet. Contact MDtronix to get one set.');
+    return reRender('Incorrect password.');
   }
 
   await env.CUSTOMERS.prepare('UPDATE customers SET last_login_at = ? WHERE id = ?').bind(nowSeconds(), auth.customerId).run();
