@@ -66,12 +66,18 @@ const HA_TAG = 'ha';
 const ACCESS_CACHE_MS = 60 * 1000;
 // Re-check the subscription this often while the tunnel is up, so a suspension takes effect within minutes.
 const ACCESS_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+// The runtime recycles this object now and then, which drops the tunnel, and Home Assistant reconnects within
+// a couple of seconds. A voice request that lands in that gap waits this long for it, instead of telling
+// Google or Alexa that the home is offline.
+const RECONNECT_GRACE_MS = 4_000;
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
 
 export class TunnelDO {
   private streams = new Map<number, Stream>();
   private voicePending = new Map<number, (reply: VoiceReply) => void>();
+  // Voice requests waiting for Home Assistant to reconnect. Each is woken by the next hello.
+  private helloWaiters = new Set<() => void>();
   private accessCache: { at: number; state: AccessState } | undefined;
   private nextId = 1;
 
@@ -187,6 +193,7 @@ export class TunnelDO {
         const instance = (await this.state.storage.get<string>('instance')) ?? '';
         const ready: RelayMessage = { t: 'ready', instance, max_streams: MAX_STREAMS };
         ws.send(JSON.stringify(ready));
+        for (const wake of [...this.helloWaiters]) wake();
         return;
       }
       case 'ping':
@@ -452,7 +459,11 @@ export class TunnelDO {
     const parsed = await readVoiceRequest(request);
     if (!parsed) return json(400, { error: 'invalid_request' });
 
-    const ha = this.haSocket();
+    let ha = this.haSocket();
+    if (!ha) {
+      await this.waitForHello(RECONNECT_GRACE_MS);
+      ha = this.haSocket();
+    }
     if (!ha) return json(503, { error: 'home_offline' });
     if (!(await this.state.storage.get<boolean>('voice'))) return json(503, { error: 'voice_unsupported' });
     if (this.voicePending.size >= MAX_STREAMS) return json(503, { error: 'busy' });
@@ -474,6 +485,19 @@ export class TunnelDO {
     return new Response(reply.body, {
       status: reply.status,
       headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    });
+  }
+
+  /** Resolves when Home Assistant next says hello on a new tunnel, or after `ms`, whichever comes first. */
+  private waitForHello(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.helloWaiters.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      this.helloWaiters.add(wake);
     });
   }
 }

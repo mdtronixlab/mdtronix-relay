@@ -345,6 +345,21 @@ test('voice: when the home is offline, the platform gets 503 home_offline', asyn
   assert.equal((await res.json()).error, 'home_offline');
 });
 
+test('voice: a request that arrives while the home is reconnecting waits for it instead of failing', async () => {
+  const { cookie, link } = shared;
+  const token = await accessToken(cookie, 'google');
+  const pending = voiceRequest('/v1/voice/google', token, googleIntent('action.devices.QUERY'));
+  await wait(1000);
+  const home = await connectHome(link.tunnel_token);
+  try {
+    const res = await pending;
+    assert.equal(res.status, 200);
+    assert.equal(home.received.length, 1);
+  } finally {
+    home.close();
+  }
+});
+
 test('voice: a home without voice support gets 503 voice_unsupported', async () => {
   const { cookie, link } = shared;
   const home = await connectHome(link.tunnel_token, { caps: [] });
