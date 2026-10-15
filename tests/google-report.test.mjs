@@ -1,5 +1,5 @@
 // End-to-end test of Google Home proactive-reporting support against a local relay:
-// POST /v1/ha/google-report-state. The real JWT-bearer exchange with Google isn't reachable from a
+// POST /v1/ha/google-report-state and POST /v1/ha/google-request-sync. The real JWT-bearer exchange with Google isn't reachable from a
 // test (no service account in this environment), so only what's testable without it is covered here:
 // the tunnel-token auth guard, payload validation, and the not-configured path. The full chain (sign
 // the JWT, exchange it, cache the token, Home Graph accepting a reportStateAndNotification call) is
@@ -130,4 +130,31 @@ test('report state: a malformed or missing payload is refused before any Google 
   // confirms validation happens first, not just that the whole path 503s regardless of the body.
   const validShape = await reportState(token, { payload: { devices: { states: {} } } });
   assert.equal(validShape.status, 503);
+});
+
+function requestSync(token) {
+  return fetch(`${BASE}/v1/ha/google-request-sync`, {
+    method: 'POST',
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+}
+
+test('request sync: no bearer token is refused', async () => {
+  const res = await requestSync(null);
+  assert.equal(res.status, 401);
+  assert.deepEqual(await res.json(), { error: 'unauthorized' });
+});
+
+test('request sync: an unknown tunnel token is refused', async () => {
+  const res = await requestSync('not-a-real-token');
+  assert.equal(res.status, 401);
+});
+
+test('request sync: a linked home gets not_configured until the service account secrets are set', async () => {
+  const email = `google-sync-${Date.now()}@example.test`;
+  const { tunnel_token: token } = await linkHome(email);
+
+  const res = await requestSync(token);
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), { error: 'not_configured' });
 });

@@ -1,4 +1,5 @@
-// Proactive state reporting for Google Home (Home Graph reportStateAndNotification). Unlike Alexa, there's
+// Proactive state reporting for Google Home (Home Graph reportStateAndNotification), and Request Sync
+// (devices:requestSync) for when a home's device list changes. Unlike Alexa, there's
 // no per-customer grant: Google authorizes by which project the Smart Home Action belongs to, using one
 // service account for the whole mdtronix-cloud project. The access token is shared across every home, not
 // per-customer — cached in a single row, refreshed with Google's OAuth2 JWT-bearer grant when it's near
@@ -21,6 +22,7 @@ import { nowSeconds, randomId, signGoogleServiceAccountJwt } from './crypto';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const HOMEGRAPH_SCOPE = 'https://www.googleapis.com/auth/homegraph';
 const REPORT_STATE_URL = 'https://homegraph.googleapis.com/v1/devices:reportStateAndNotification';
+const REQUEST_SYNC_URL = 'https://homegraph.googleapis.com/v1/devices:requestSync';
 const TOKEN_SINGLETON_ID = 'singleton';
 // Refetch a bit before the token's real expiry, so a borrowed token never goes stale mid-request.
 const EXPIRY_SAFETY_MARGIN_S = 60;
@@ -105,6 +107,25 @@ export async function googleReportState(request: Request, env: Env): Promise<Res
   if (typeof body.payload !== 'object' || body.payload === null) return jsonError(400, 'invalid_request');
   const requestId = typeof body.requestId === 'string' && body.requestId ? body.requestId : randomId();
 
+  return callHomegraph(env, REPORT_STATE_URL, { requestId, agentUserId: home.instance, payload: body.payload });
+}
+
+/**
+ * POST /v1/ha/google-request-sync. Same tunnel-token auth as report state, and no body. Asks Home Graph to
+ * send this home a fresh SYNC, after the owner changes which devices Google sees or renames one. The
+ * agentUserId is again this authenticated home's own subdomain, so a home can only re-sync itself.
+ */
+export async function googleRequestSync(request: Request, env: Env): Promise<Response> {
+  const token = bearer(request);
+  const home = token ? await homeForTunnelToken(env, token) : null;
+  if (!home) return jsonError(401, 'unauthorized');
+
+  // async: Google queues the SYNC and answers at once, instead of holding this request open until it's done.
+  return callHomegraph(env, REQUEST_SYNC_URL, { agentUserId: home.instance, async: true });
+}
+
+/** Makes one Home Graph call with the shared token, and relays back Google's status code and body. */
+async function callHomegraph(env: Env, url: string, body: Record<string, unknown>): Promise<Response> {
   if (!env.GOOGLE_HOMEGRAPH_CLIENT_EMAIL || !env.GOOGLE_HOMEGRAPH_PRIVATE_KEY) {
     return jsonError(503, 'not_configured');
   }
@@ -114,10 +135,10 @@ export async function googleReportState(request: Request, env: Env): Promise<Res
 
   let res: Response;
   try {
-    res = await fetch(REPORT_STATE_URL, {
+    res = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId, agentUserId: home.instance, payload: body.payload }),
+      body: JSON.stringify(body),
     });
   } catch {
     return jsonError(502, 'homegraph_unreachable');
