@@ -30,12 +30,21 @@ async function waitForHealth() {
   throw new Error('relay did not start');
 }
 
+// Own persisted local state, keyed by port — otherwise this file's rate-limit counters (see
+// src/ratelimit.ts's "local" fallback key) would leak into or inherit from every other test file.
+const PERSIST_TO = `.wrangler/test-state-${PORT}`;
+
 before(async () => {
+  spawnSync(
+    'npx',
+    ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local', '--persist-to', PERSIST_TO],
+    { cwd: fileURLToPath(new URL('..', import.meta.url)), shell: true, stdio: 'ignore' },
+  );
   // Secrets go in as --var flags. The .dev.vars file isn't reaching the handlers yet (see PHASE0.md).
   dev = spawn(
     'npx',
     [
-      'wrangler', 'dev', '--port', String(PORT), '--local',
+      'wrangler', 'dev', '--port', String(PORT), '--local', '--persist-to', PERSIST_TO,
       '--var', 'DEV_LOGIN:true',
       '--var', 'ADMIN_TOKEN:testadmin',
     ],

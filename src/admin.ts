@@ -4,12 +4,12 @@
 //   { "email": "...", "action": "activate", "paid_until": <unix seconds> }
 //   { "email": "...", "action": "suspend" }
 
-import { approveEmail, listApprovedEmails, revokeApprovedEmail } from './approval';
-import { constantTimeEqual, nowSeconds } from './crypto';
+import { approveEmail, isApprovedEmail, listApprovedEmails, revokeApprovedEmail } from './approval';
+import { constantTimeEqual, nowSeconds, randomId, randomToken, sha256Hex } from './crypto';
 import type { Env } from './env';
 import { json, jsonError } from './http';
 import { hashPassword } from './password';
-import { MIN_PASSWORD_LENGTH } from './password_auth';
+import { invalidatePendingResetTokens, MIN_PASSWORD_LENGTH } from './password_auth';
 import { revokeAllSessions } from './web';
 
 /** Checks the operator bearer token. Returns an error response, or null when the caller is allowed. */
@@ -147,9 +147,11 @@ export async function handleSetApprovedEmail(request: Request, env: Env): Promis
  * POST /v1/admin/set-password
  * { "email": "...", "password": "..." }
  *
- * Sets or replaces a customer's password directly — the only way to get a legacy (pre-password-auth,
- * Google-linked) account working, or to help a customer who's locked out, since there's no self-service
- * reset. Doesn't touch approval status; staff still approve the email separately, same as always.
+ * Sets or replaces a customer's password directly, with staff choosing and reading out the new password
+ * themselves — the quickest path for a legacy (pre-password-auth, Google-linked) account or a locked-out
+ * customer on a call. See handleGenerateResetLink below for the alternative where the customer sets their
+ * own password instead of staff choosing it for them. Doesn't touch approval status; staff still approve
+ * the email separately, same as always.
  */
 export async function handleSetPassword(request: Request, env: Env): Promise<Response> {
   const denied = await requireAdmin(request, env);
@@ -175,5 +177,53 @@ export async function handleSetPassword(request: Request, env: Env): Promise<Res
     .run();
   // A reset should lock out whoever has the old session, not just whoever doesn't know the new password.
   await revokeAllSessions(env.CUSTOMERS, customer.id);
+  // ...and invalidate any reset link staff sent earlier, so it can't later overwrite this password too.
+  await invalidatePendingResetTokens(env.CUSTOMERS, customer.id);
   return json(200, { ok: true });
+}
+
+const RESET_TOKEN_TTL_SECONDS = 24 * 3600;
+
+/**
+ * POST /v1/admin/generate-reset-link. { "email": "..." }
+ *
+ * Staff confirm the request is really the customer's — outside this system, however staff normally reach
+ * them — then generate a link here and send it themselves over that same channel. There's no email sending
+ * anywhere in this relay, so the link is never dispatched automatically. It's valid once, for 24 hours.
+ * Generating a new one invalidates any earlier unused link for the same customer, so only the latest one
+ * staff actually sent is still live.
+ *
+ * Refuses an unapproved email (403 not_approved): a reset link signs the customer straight in once used,
+ * so generating one is itself a way to grant access — it must respect the same approval gate as every
+ * other way to sign in, not create a path around it. (validResetToken in password_auth.ts re-checks this
+ * at redemption too, in case approval is revoked after the link is sent.)
+ */
+export async function handleGenerateResetLink(request: Request, env: Env): Promise<Response> {
+  const denied = await requireAdmin(request, env);
+  if (denied) return denied;
+
+  let body: { email?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError(400, 'invalid_json');
+  }
+  if (typeof body.email !== 'string' || !body.email.includes('@')) return jsonError(400, 'invalid_email');
+
+  const email = body.email.trim().toLowerCase();
+  const customer = await env.CUSTOMERS.prepare('SELECT id FROM customers WHERE email = ?').bind(email).first<{ id: string }>();
+  if (!customer) return jsonError(404, 'not_found');
+  if (!(await isApprovedEmail(env.CUSTOMERS, email))) return jsonError(403, 'not_approved');
+
+  const now = nowSeconds();
+  await invalidatePendingResetTokens(env.CUSTOMERS, customer.id);
+
+  const token = randomToken(32);
+  await env.CUSTOMERS.prepare(
+    'INSERT INTO password_reset_tokens (id, customer_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
+  )
+    .bind(randomId(), customer.id, await sha256Hex(token), now + RESET_TOKEN_TTL_SECONDS, now)
+    .run();
+
+  return json(200, { url: `${env.PUBLIC_ORIGIN}/reset-password?token=${token}` });
 }

@@ -27,11 +27,15 @@ async function waitForHealth() {
   throw new Error('relay did not start');
 }
 
+// Own persisted local state, keyed by port — otherwise this file's rate-limit counters (see
+// src/ratelimit.ts's "local" fallback key) would leak into or inherit from every other test file.
+const PERSIST_TO = `.wrangler/test-state-${PORT}`;
+
 before(async () => {
-  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local'], { cwd, shell: true, stdio: 'ignore' });
+  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local', '--persist-to', PERSIST_TO], { cwd, shell: true, stdio: 'ignore' });
   dev = spawn(
     'npx',
-    ['wrangler', 'dev', '--port', String(PORT), '--local', '--var', 'DEV_LOGIN:true', '--var', `ADMIN_TOKEN:${ADMIN_TOKEN}`],
+    ['wrangler', 'dev', '--port', String(PORT), '--local', '--persist-to', PERSIST_TO, '--var', 'DEV_LOGIN:true', '--var', `ADMIN_TOKEN:${ADMIN_TOKEN}`],
     { cwd, shell: true, stdio: 'ignore' },
   );
   await waitForHealth();

@@ -5,17 +5,17 @@
 //   <subdomain>.mdtronix.online a customer's remote URL, proxied to their Home Assistant
 
 import { haLogin } from './ha_login';
-import { loginCustomer, loginPage, registerCustomer, registerPage } from './password_auth';
+import { loginCustomer, loginPage, registerCustomer, registerPage, resetPasswordPage, resetPasswordSubmit } from './password_auth';
 import type { Env } from './env';
 import { jsonError } from './http';
-import { handleAdminHomes, handleAdminPendingCustomers, handleAdminSubscription, handleListApprovedEmails, handleSetApprovedEmail, handleSetPassword } from './admin';
+import { handleAdminHomes, handleAdminPendingCustomers, handleAdminSubscription, handleGenerateResetLink, handleListApprovedEmails, handleSetApprovedEmail, handleSetPassword } from './admin';
 import { authorizeGet, authorizePost, revokeEndpoint, switchAccount, tokenEndpoint } from './oauth';
 import { attachTunnel, instanceFromHost, proxyToInstance, unlink } from './tunnel';
 import { devApprovedCheck, devLogin } from './web';
 import { alexaDirective, googleFulfillment } from './voice';
 import { alexaReportToken } from './alexa-events';
 import { googleReportState } from './google-report';
-import { accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
+import { accountChangePassword, accountPage, accountSignOut, accountUnlinkHome, accountUnlinkVoice, homePage } from './site';
 import { privacyPage, termsPage } from './legal';
 
 export { TunnelDO } from './tunnel-do';
@@ -29,6 +29,7 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/' && method === 'GET') return homePage(request, env);
   if (pathname === '/account' && method === 'GET') return accountPage(request, env);
   if (pathname === '/account/sign-out' && method === 'POST') return accountSignOut(request, env);
+  if (pathname === '/account/change-password' && method === 'POST') return accountChangePassword(request, env);
   if (pathname === '/account/unlink-home' && method === 'POST') return accountUnlinkHome(request, env);
   if (pathname === '/account/unlink-voice' && method === 'POST') return accountUnlinkVoice(request, env);
   if (pathname === '/privacy' && method === 'GET') return privacyPage(request, env);
@@ -49,6 +50,7 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/v1/admin/approved-emails' && method === 'GET') return handleListApprovedEmails(request, env);
   if (pathname === '/v1/admin/approved-emails' && method === 'POST') return handleSetApprovedEmail(request, env);
   if (pathname === '/v1/admin/set-password' && method === 'POST') return handleSetPassword(request, env);
+  if (pathname === '/v1/admin/generate-reset-link' && method === 'POST') return handleGenerateResetLink(request, env);
 
   // Voice account linking (Google Home, Alexa)
   if (pathname === '/oauth/authorize' && method === 'GET') return authorizeGet(request, env);
@@ -68,6 +70,8 @@ async function relayRoutes(request: Request, env: Env, pathname: string): Promis
   if (pathname === '/login' && method === 'GET') return loginPage(request, env);
   if (pathname === '/login' && method === 'POST') return loginCustomer(request, env);
   if (pathname === '/register' && method === 'GET') return registerPage(request, env);
+  if (pathname === '/reset-password' && method === 'GET') return resetPasswordPage(request, env);
+  if (pathname === '/reset-password' && method === 'POST') return resetPasswordSubmit(request, env);
   if (pathname === '/register' && method === 'POST') return registerCustomer(request, env);
 
   // Local development only. Returns 404 unless DEV_LOGIN is set.

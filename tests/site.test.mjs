@@ -29,12 +29,16 @@ async function waitForHealth() {
   throw new Error('relay did not start');
 }
 
+// Own persisted local state, keyed by port — otherwise this file's rate-limit counters (see
+// src/ratelimit.ts's "local" fallback key) would leak into or inherit from every other test file.
+const PERSIST_TO = `.wrangler/test-state-${PORT}`;
+
 before(async () => {
-  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local'], { cwd, shell: true, stdio: 'ignore' });
+  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local', '--persist-to', PERSIST_TO], { cwd, shell: true, stdio: 'ignore' });
   dev = spawn(
     'npx',
     [
-      'wrangler', 'dev', '--port', String(PORT), '--local',
+      'wrangler', 'dev', '--port', String(PORT), '--local', '--persist-to', PERSIST_TO,
       '--var', 'DEV_LOGIN:true',
       '--var', `GOOGLE_VOICE_CLIENT_ID:${GOOGLE.clientId}`,
       '--var', `GOOGLE_VOICE_CLIENT_SECRET:${GOOGLE.clientSecret}`,
@@ -231,6 +235,138 @@ test('account page shows a linked voice platform and unlinks it on request', asy
 
   const after = await get('/account', cookie);
   assert.match(await after.text(), /Google Home: Not connected/);
+});
+
+// --- Change password -----------------------------------------------------------
+
+async function registerAndSignIn(email, password) {
+  await fetch(`${BASE}/register`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password, password_confirm: password, next: '/account' }),
+    redirect: 'manual',
+  });
+  await fetch(`${BASE}/v1/admin/approved-emails`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email, action: 'approve' }),
+  });
+  const res = await post('/login', '', { email, password });
+  const cookie = res.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session='));
+  assert.ok(cookie, 'password login set a session cookie');
+  return cookie.split(';')[0];
+}
+
+test('change password: wrong current password, a short new password, and a mismatched confirmation are refused', async () => {
+  const email = `pw-refuse-${Date.now()}@example.test`;
+  const cookie = await registerAndSignIn(email, 'the original password');
+
+  const wrongCurrent = await post('/account/change-password', cookie, {
+    current_password: 'not it', new_password: 'a new password here', new_password_confirm: 'a new password here',
+  });
+  assert.equal(wrongCurrent.status, 400);
+  assert.match(await wrongCurrent.text(), /Current password is incorrect/);
+
+  const tooShort = await post('/account/change-password', cookie, {
+    current_password: 'the original password', new_password: 'short', new_password_confirm: 'short',
+  });
+  assert.equal(tooShort.status, 400);
+  assert.match(await tooShort.text(), /at least 8 characters/);
+
+  const mismatched = await post('/account/change-password', cookie, {
+    current_password: 'the original password', new_password: 'a new password here', new_password_confirm: 'different',
+  });
+  assert.equal(mismatched.status, 400);
+  assert.match(await mismatched.text(), /do not match/);
+
+  // None of the above actually changed anything: the original password still works.
+  const stillWorks = await post('/login', '', { email, password: 'the original password' });
+  assert.equal(stillWorks.status, 302);
+});
+
+test('change password requires the relay origin', async () => {
+  const cookie = await registerAndSignIn(`pw-origin-${Date.now()}@example.test`, 'the original password');
+  const res = await fetch(`${BASE}/account/change-password`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ current_password: 'the original password', new_password: 'whatever new', new_password_confirm: 'whatever new' }),
+  });
+  assert.equal(res.status, 403);
+});
+
+test('change password succeeds, signs out every other session, and leaves the current one alone', async () => {
+  const email = `pw-change-${Date.now()}@example.test`;
+  const cookieA = await registerAndSignIn(email, 'the original password');
+  // A second session for the same account, e.g. a different browser.
+  const second = await post('/login', '', { email, password: 'the original password' });
+  const cookieB = second.headers.getSetCookie().find((c) => c.startsWith('__Host-mdt_session=')).split(';')[0];
+  assert.equal((await get('/account', cookieB)).status, 200, 'the second session works before the change');
+
+  const change = await post('/account/change-password', cookieA, {
+    current_password: 'the original password', new_password: 'the brand new password', new_password_confirm: 'the brand new password',
+  });
+  assert.equal(change.status, 302);
+  assert.equal(change.headers.get('location'), '/account');
+
+  // The session that made the change is still good.
+  assert.equal((await get('/account', cookieA)).status, 200);
+  // The other session for the same account is not.
+  const afterB = await get('/account', cookieB);
+  assert.equal(afterB.status, 302);
+  assert.match(afterB.headers.get('location'), /^\/login/);
+
+  // The old password no longer works; the new one does.
+  const oldPassword = await post('/login', '', { email, password: 'the original password' });
+  assert.equal(oldPassword.status, 400);
+  const newPassword = await post('/login', '', { email, password: 'the brand new password' });
+  assert.equal(newPassword.status, 302);
+});
+
+test('change password sends a signed-out visitor to sign in', async () => {
+  const res = await fetch(`${BASE}/account/change-password`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ current_password: 'x', new_password: 'whatever new', new_password_confirm: 'whatever new' }),
+    redirect: 'manual',
+  });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /^\/login\?next=%2Faccount$/);
+});
+
+function generateResetLink(email) {
+  return fetch(`${BASE}/v1/admin/generate-reset-link`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+}
+
+test('change password invalidates any reset link staff sent earlier', async () => {
+  const email = `pw-vs-resetlink-${Date.now()}@example.test`;
+  const cookie = await registerAndSignIn(email, 'the original password');
+
+  const { url } = await (await generateResetLink(email)).json();
+  const token = new URL(url).searchParams.get('token');
+
+  const change = await post('/account/change-password', cookie, {
+    current_password: 'the original password', new_password: 'the brand new password', new_password_confirm: 'the brand new password',
+  });
+  assert.equal(change.status, 302);
+
+  const page = await get(`/reset-password?token=${token}`);
+  assert.equal(page.status, 400);
+  assert.match(await page.text(), /no longer valid/);
+});
+
+test('change password refuses a legacy no-password account, without a measurably different response', async () => {
+  const email = `pw-legacy-${Date.now()}@example.test`;
+  const cookie = await login(email); // dev-login: a session with no password ever set.
+
+  const attempt = await post('/account/change-password', cookie, {
+    current_password: 'anything at all', new_password: 'a new password here', new_password_confirm: 'a new password here',
+  });
+  assert.equal(attempt.status, 400);
+  assert.match(await attempt.text(), /Current password is incorrect/);
 });
 
 // --- Sign out ----------------------------------------------------------------

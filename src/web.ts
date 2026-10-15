@@ -63,6 +63,20 @@ export async function revokeAllSessions(db: D1Database, customerId: string): Pro
 }
 
 /**
+ * Revokes a customer's sessions other than the one making this request. Used for self-service password
+ * change (POST /account/change-password): everywhere else gets signed out, but not the browser the
+ * customer is sitting at right now.
+ */
+export async function revokeOtherSessions(request: Request, db: D1Database, customerId: string): Promise<void> {
+  const token = readCookie(request, SESSION_COOKIE);
+  const keepHash = token ? await sha256Hex(token) : '';
+  await db
+    .prepare('UPDATE web_sessions SET revoked_at = ? WHERE customer_id = ? AND token_hash != ? AND revoked_at IS NULL')
+    .bind(nowSeconds(), customerId, keepHash)
+    .run();
+}
+
+/**
  * GET /v1/dev/login?email=…. Signs in a test customer with no Google account.
  * Returns 404 unless DEV_LOGIN is "true", which is only set in the local .dev.vars file.
  */

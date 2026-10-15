@@ -4,11 +4,14 @@
 
 import { nowSeconds } from './crypto';
 import type { Env } from './env';
-import { esc, html, jsonError, redirect } from './http';
+import { esc, formString, html, jsonError, redirect } from './http';
 import { GRACE_SECONDS, type SubscriptionRow } from './billing';
 import { linkedPlatforms, revokeGrantsForCustomer } from './oauth';
+import { hashPassword, verifyPassword } from './password';
+import { DUMMY_HASH, invalidatePendingResetTokens, MIN_PASSWORD_LENGTH } from './password_auth';
+import { checkLimit, clientKey } from './ratelimit';
 import { unlinkForCustomer } from './tunnel';
-import { signedInCustomer, signOut } from './web';
+import { revokeOtherSessions, signedInCustomer, signOut } from './web';
 
 const SITE_CSS = `
 :root { color-scheme: light; }
@@ -36,6 +39,9 @@ form.inline { display: inline; margin: 0; }
 button { font: inherit; cursor: pointer; }
 button.link { background: none; border: none; color: #1a5fb4; padding: 0; text-decoration: underline; }
 button.danger { background: #fff; border: 1px solid #c4281b; color: #c4281b; border-radius: .4rem; padding: .5rem 1rem; }
+.card form.stack input { font-size: 1rem; padding: .5rem; width: 100%; max-width: 22rem; box-sizing: border-box; margin-top: .25rem; }
+.card form.stack label { display: block; margin-top: 1rem; font-size: .9rem; color: #333; }
+.card form.stack button { margin-top: 1.25rem; background: #1a5fb4; color: #fff; border: none; border-radius: .4rem; padding: .6rem 1.2rem; }
 `;
 
 export function shell(title: string, customer: { email: string } | null, body: string): string {
@@ -112,11 +118,12 @@ function subscriptionSummary(sub: SubscriptionRow | null, now: number): { label:
   return { label: 'Suspended', detail: 'Contact support to reactivate.', ok: false };
 }
 
-/** GET /account. Signs the customer in first if they aren't already. */
-export async function accountPage(request: Request, env: Env): Promise<Response> {
-  const customer = await signedInCustomer(request, env.CUSTOMERS);
-  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
-
+/** Builds the /account body. Shared by the GET page and the change-password POST's failure re-render. */
+async function renderAccountBody(
+  customer: { id: string; email: string },
+  env: Env,
+  passwordError: string | null,
+): Promise<string> {
   const instance = await env.CUSTOMERS.prepare('SELECT subdomain FROM instances WHERE customer_id = ?')
     .bind(customer.id)
     .first<{ subdomain: string }>();
@@ -169,14 +176,78 @@ export async function accountPage(request: Request, env: Env): Promise<Response>
     })
     .join('');
 
-  const body = `
+  const passwordCard = `
+<section class="card"><h2>Password</h2>
+${passwordError ? `<p class="warn">${esc(passwordError)}</p>` : ''}
+<form method="post" action="/account/change-password" class="stack">
+  <label>Current password<input type="password" name="current_password" autocomplete="current-password" required></label>
+  <label>New password<input type="password" name="new_password" autocomplete="new-password" required></label>
+  <label>Confirm new password<input type="password" name="new_password_confirm" autocomplete="new-password" required></label>
+  <button type="submit">Change password</button>
+</form>
+<p class="fine">This signs you out everywhere else, but not here.</p>
+</section>`;
+
+  return `
 <h1>Your account</h1>
 <section class="card"><h2>Home Assistant</h2>${homeCard}</section>
 <section class="card"><h2>Subscription</h2>${subCard}</section>
 <section class="card"><h2>Voice assistants</h2>${voiceCard}
-<p class="fine">Link Google Home or Alexa from their own app. Choose which devices they can control, and set a PIN for locks and alarms, from the MDtronix Cloud integration's options in Home Assistant.</p></section>`;
+<p class="fine">Link Google Home or Alexa from their own app. Choose which devices they can control, and set a PIN for locks and alarms, from the MDtronix Cloud integration's options in Home Assistant.</p></section>
+${passwordCard}`;
+}
 
+/** GET /account. Signs the customer in first if they aren't already. */
+export async function accountPage(request: Request, env: Env): Promise<Response> {
+  const customer = await signedInCustomer(request, env.CUSTOMERS);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
+
+  const body = await renderAccountBody(customer, env, null);
   return html(200, shell('Your account · MDtronix Cloud', customer, body));
+}
+
+/** POST /account/change-password. Requires the current password; signs out every other session. */
+export async function accountChangePassword(request: Request, env: Env): Promise<Response> {
+  const denied = checkOrigin(request, env);
+  if (denied) return denied;
+  const customer = await signedInCustomer(request, env.CUSTOMERS);
+  if (!customer) return redirect(`/login?next=${encodeURIComponent('/account')}`);
+  const limited = await checkLimit(env, 'RL_LOGIN', clientKey(request));
+  if (limited) return limited;
+
+  const form = await request.formData();
+  const currentPassword = formString(form, 'current_password');
+  const newPassword = formString(form, 'new_password');
+  const newPasswordConfirm = formString(form, 'new_password_confirm');
+
+  const reRender = async (message: string) => {
+    const body = await renderAccountBody(customer, env, message);
+    return html(400, shell('Your account · MDtronix Cloud', customer, body));
+  };
+
+  const row = await env.CUSTOMERS.prepare('SELECT password_hash FROM customers WHERE id = ?')
+    .bind(customer.id)
+    .first<{ password_hash: string | null }>();
+  // Always run verifyPassword, against the real hash if there is one or the dummy if not, so a legacy
+  // account with no password set yet isn't distinguishable from a normal one by response time.
+  const currentOk = await verifyPassword(currentPassword, row?.password_hash ?? DUMMY_HASH);
+  if (!row?.password_hash || !currentOk) {
+    return reRender('Current password is incorrect.');
+  }
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return reRender(`New password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+  }
+  if (newPassword !== newPasswordConfirm) {
+    return reRender('New passwords do not match.');
+  }
+
+  await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .bind(await hashPassword(newPassword), nowSeconds(), customer.id)
+    .run();
+  await revokeOtherSessions(request, env.CUSTOMERS, customer.id);
+  // ...and invalidate any reset link staff sent earlier, so it can't later overwrite this password too.
+  await invalidatePendingResetTokens(env.CUSTOMERS, customer.id);
+  return redirect('/account');
 }
 
 /** POST /account/sign-out. */

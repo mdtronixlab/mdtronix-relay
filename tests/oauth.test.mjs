@@ -30,13 +30,20 @@ async function waitForHealth() {
   throw new Error('relay did not start');
 }
 
+// Each test file gets its own persisted local state (D1, rate limiters, …), keyed by port. Without this,
+// every file's wrangler dev shares the same default .wrangler/state directory, so a rate limiter whose
+// local fallback key is just "local" (see src/ratelimit.ts's clientKey) accumulates across every file in
+// the same `npm test` run — and across runs, since it's never cleared — until some unrelated test gets a
+// spurious 429.
+const PERSIST_TO = `.wrangler/test-state-${PORT}`;
+
 before(async () => {
   // The local database needs the voice tables. Apply the migrations first.
-  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local'], { cwd, shell: true, stdio: 'ignore' });
+  spawnSync('npx', ['wrangler', 'd1', 'migrations', 'apply', 'mdtronix-customers', '--local', '--persist-to', PERSIST_TO], { cwd, shell: true, stdio: 'ignore' });
   dev = spawn(
     'npx',
     [
-      'wrangler', 'dev', '--port', String(PORT), '--local',
+      'wrangler', 'dev', '--port', String(PORT), '--local', '--persist-to', PERSIST_TO,
       '--var', 'DEV_LOGIN:true',
       '--var', `GOOGLE_VOICE_CLIENT_ID:${CLIENT_ID}`,
       '--var', `GOOGLE_VOICE_CLIENT_SECRET:${CLIENT_SECRET}`,

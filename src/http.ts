@@ -59,3 +59,10 @@ export function safeNext(next: string | null): string {
   if (!next || !next.startsWith('/') || next.startsWith('//')) return '/account';
   return next;
 }
+
+/** A form field's value as a string — '' if it's absent, never coerced from a File (form.get returns one
+ * for a multipart file part; String(file) silently stringifies to "[object File]" instead of failing). */
+export function formString(form: FormData, key: string): string {
+  const value = form.get(key);
+  return typeof value === 'string' ? value : '';
+}

@@ -3,12 +3,12 @@
 // This is also what the Alexa/Google Home account-linking web view shows when a customer isn't signed in yet
 // (see authorizeGet in oauth.ts) — it's the same session mechanism /oauth/authorize already relies on.
 
-import { nowSeconds, randomId } from './crypto';
+import { nowSeconds, randomId, sha256Hex } from './crypto';
 import { hashPassword, verifyPassword } from './password';
 import type { Env } from './env';
-import { esc, html, redirect, safeNext } from './http';
+import { esc, formString, html, redirect, safeNext } from './http';
 import { isApprovedEmail } from './approval';
-import { createSession, sessionCookie } from './web';
+import { createSession, revokeAllSessions, sessionCookie } from './web';
 import { checkLimit, clientKey } from './ratelimit';
 
 export const MIN_PASSWORD_LENGTH = 8;
@@ -16,8 +16,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // A syntactically valid but unusable hash, compared against when there's no real one — so an unknown
 // email or an unclaimed legacy row still pays the same PBKDF2 cost as a wrong password against a real
 // account. Without this, those cases return measurably faster, which leaks which emails exist via
-// response timing even though the response body and status code are identical either way.
-const DUMMY_HASH = 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+// response timing even though the response body and status code are identical either way. Exported so
+// site.ts's accountChangePassword can pay the same cost for a legacy no-password account.
+export const DUMMY_HASH = 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -61,8 +62,8 @@ ${swap}`;
 }
 
 function readNext(request: Request, form: FormData): string {
-  const fromForm = form.get('next');
-  return safeNext(typeof fromForm === 'string' && fromForm ? fromForm : new URL(request.url).searchParams.get('next'));
+  const fromForm = formString(form, 'next');
+  return safeNext(fromForm || new URL(request.url).searchParams.get('next'));
 }
 
 export async function loginPage(request: Request, env: Env): Promise<Response> {
@@ -73,6 +74,103 @@ export async function loginPage(request: Request, env: Env): Promise<Response> {
 export async function registerPage(request: Request, env: Env): Promise<Response> {
   const next = safeNext(new URL(request.url).searchParams.get('next'));
   return html(200, page('Create account · MDtronix Cloud', authForm('register', next, null, '')));
+}
+
+// A function, not a module-scope constant: Workers forbids constructing a Response outside a handler.
+function expiredLinkPage(): Response {
+  return html(
+    400,
+    page(
+      'Link expired · MDtronix Cloud',
+      `<h1>This link is no longer valid</h1><p>It may have expired or already been used. Contact MDtronix for a new one.</p>`,
+    ),
+  );
+}
+
+function resetForm(token: string, error: string | null): string {
+  return `<h1>Set a new password</h1>
+${error ? `<p class="err">${esc(error)}</p>` : ''}
+<form method="post" action="/reset-password">
+  <input type="hidden" name="token" value="${esc(token)}">
+  <label>New password<input type="password" name="password" autocomplete="new-password" required></label>
+  <label>Confirm new password<input type="password" name="password_confirm" autocomplete="new-password" required></label>
+  <button type="submit">Set password</button>
+</form>`;
+}
+
+/**
+ * The token's row, if it exists, is unused, hasn't expired, and its customer is still approved — null
+ * otherwise. Approval is re-checked here, not just at generation (handleGenerateResetLink in admin.ts):
+ * it could have been revoked after the link was sent, and this is also what stops the link from ever
+ * signing in a customer who was never approved in the first place.
+ */
+async function validResetToken(db: D1Database, token: string): Promise<{ id: string; customerId: string } | null> {
+  if (!token) return null;
+  const row = await db
+    .prepare(
+      `SELECT t.id, t.customer_id, c.email
+       FROM password_reset_tokens t JOIN customers c ON c.id = t.customer_id
+       WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?`,
+    )
+    .bind(await sha256Hex(token), nowSeconds())
+    .first<{ id: string; customer_id: string; email: string }>();
+  if (!row || !(await isApprovedEmail(db, row.email))) return null;
+  return { id: row.id, customerId: row.customer_id };
+}
+
+/** Invalidates any pending reset link for a customer. Called whenever their password changes through a
+ * different path (admin set-password, self-service change-password), so an old unused link can't later
+ * overwrite that deliberate change. */
+export async function invalidatePendingResetTokens(db: D1Database, customerId: string): Promise<void> {
+  await db
+    .prepare('UPDATE password_reset_tokens SET used_at = ? WHERE customer_id = ? AND used_at IS NULL')
+    .bind(nowSeconds(), customerId)
+    .run();
+}
+
+/** GET /reset-password?token=…. Staff generate this link (POST /v1/admin/generate-reset-link) and send it
+ * to the customer themselves — there's no email sending in this relay, and no public "forgot password"
+ * form; the customer contacts staff directly, outside this system. */
+export async function resetPasswordPage(request: Request, env: Env): Promise<Response> {
+  const token = new URL(request.url).searchParams.get('token') ?? '';
+  if (!(await validResetToken(env.CUSTOMERS, token))) return expiredLinkPage();
+  return html(200, page('Set a new password · MDtronix Cloud', resetForm(token, null)));
+}
+
+/** POST /reset-password. Consumes the token, sets the password, and signs the customer straight in. */
+export async function resetPasswordSubmit(request: Request, env: Env): Promise<Response> {
+  const denied = checkOrigin(request, env);
+  if (denied) return denied;
+  const limited = await checkLimit(env, 'RL_LOGIN', clientKey(request));
+  if (limited) return limited;
+
+  const form = await request.formData();
+  const token = formString(form, 'token');
+  const password = formString(form, 'password');
+  const passwordConfirm = formString(form, 'password_confirm');
+
+  const valid = await validResetToken(env.CUSTOMERS, token);
+  if (!valid) return expiredLinkPage();
+
+  const reRender = (message: string) => html(400, page('Set a new password · MDtronix Cloud', resetForm(token, message)));
+  if (password.length < MIN_PASSWORD_LENGTH) return reRender(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+  if (password !== passwordConfirm) return reRender('Passwords do not match.');
+
+  const now = nowSeconds();
+  // Claim the token before issuing anything, so a replayed submit (two tabs, a double click) can't both succeed.
+  const claim = await env.CUSTOMERS.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL')
+    .bind(now, valid.id)
+    .run();
+  if (claim.meta.changes !== 1) return expiredLinkPage();
+
+  await env.CUSTOMERS.prepare('UPDATE customers SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .bind(await hashPassword(password), now, valid.customerId)
+    .run();
+  // A reset should lock out whoever has an old session, not just whoever doesn't know the new password.
+  await revokeAllSessions(env.CUSTOMERS, valid.customerId);
+
+  const session = await createSession(env.CUSTOMERS, valid.customerId);
+  return redirect('/account', [sessionCookie(session)]);
 }
 
 /** The session cookie is SameSite=Lax, so this origin check is the CSRF guard for these POSTs. */
@@ -92,9 +190,9 @@ export async function registerCustomer(request: Request, env: Env): Promise<Resp
 
   const form = await request.formData();
   const next = readNext(request, form);
-  const email = normalizeEmail(String(form.get('email') ?? ''));
-  const password = String(form.get('password') ?? '');
-  const confirm = String(form.get('password_confirm') ?? '');
+  const email = normalizeEmail(formString(form, 'email'));
+  const password = formString(form, 'password');
+  const confirm = formString(form, 'password_confirm');
 
   const reRender = (message: string) => html(400, page('Create account · MDtronix Cloud', authForm('register', next, message, email)));
 
@@ -180,8 +278,8 @@ export async function loginCustomer(request: Request, env: Env): Promise<Respons
 
   const form = await request.formData();
   const next = readNext(request, form);
-  const email = normalizeEmail(String(form.get('email') ?? ''));
-  const password = String(form.get('password') ?? '');
+  const email = normalizeEmail(formString(form, 'email'));
+  const password = formString(form, 'password');
 
   const reRender = (message: string) => html(400, page('Sign in · MDtronix Cloud', authForm('login', next, message, email)));
 
