@@ -124,8 +124,22 @@ export class TunnelDO {
     return state;
   }
 
+  /**
+   * The live Home Assistant tunnel. A replaced or dropped socket can stay listed after it closes, and
+   * sending on it throws, so only an open socket counts, and the most recently attached one wins.
+   */
   private haSocket(): WebSocket | null {
-    return this.state.getWebSockets(HA_TAG)[0] ?? null;
+    let live: WebSocket | null = null;
+    let liveSince = -1;
+    for (const ws of this.state.getWebSockets(HA_TAG)) {
+      if (ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
+      const since = (ws.deserializeAttachment() as { attachedAt?: number } | null)?.attachedAt ?? 0;
+      if (since > liveSince) {
+        live = ws;
+        liveSince = since;
+      }
+    }
+    return live;
   }
 
   private async attach(request: Request): Promise<Response> {
@@ -141,6 +155,7 @@ export class TunnelDO {
     const client = pair[0];
     const server = pair[1];
     this.state.acceptWebSocket(server, [HA_TAG]);
+    server.serializeAttachment({ attachedAt: Date.now() });
     await this.state.storage.put({ instance, lastPongAt: Date.now(), lastAccessCheckAt: Date.now() });
     await this.state.storage.setAlarm(Date.now() + PING_INTERVAL_S * 1000);
 
@@ -168,7 +183,10 @@ export class TunnelDO {
     this.onData(message);
   }
 
-  async webSocketClose(_ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    // A replaced socket finishing its close doesn't concern the requests already riding on its successor.
+    const live = this.haSocket();
+    if (live && live !== ws) return;
     // Fail every stream, since HA can't answer them now.
     for (const [id, stream] of this.streams) this.failStream(id, stream, 'home assistant disconnected');
     this.streams.clear();
@@ -177,8 +195,8 @@ export class TunnelDO {
     this.voicePending.clear();
   }
 
-  async webSocketError(_ws: WebSocket): Promise<void> {
-    await this.webSocketClose(_ws);
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.webSocketClose(ws);
   }
 
   private async onControl(ws: WebSocket, msg: HaMessage): Promise<void> {
@@ -470,7 +488,13 @@ export class TunnelDO {
 
     const id = this.allocId();
     const answer = new Promise<VoiceReply>((resolve) => this.voicePending.set(id, resolve));
-    ha.send(JSON.stringify({ t: 'voice', id, platform: parsed.platform, body: parsed.body } satisfies RelayMessage));
+    try {
+      ha.send(JSON.stringify({ t: 'voice', id, platform: parsed.platform, body: parsed.body } satisfies RelayMessage));
+    } catch {
+      // The socket closed between picking it and sending.
+      this.voicePending.delete(id);
+      return json(503, { error: 'home_offline' });
+    }
 
     let reply: VoiceReply;
     try {

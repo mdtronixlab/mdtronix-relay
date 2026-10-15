@@ -360,6 +360,26 @@ test('voice: a request that arrives while the home is reconnecting waits for it 
   }
 });
 
+test('voice: after Home Assistant reconnects, requests go to the new tunnel, not the replaced one', async () => {
+  const { cookie, link } = shared;
+  const token = await accessToken(cookie, 'google');
+  const first = await connectHome(link.tunnel_token);
+  await wait(300);
+  const second = await connectHome(link.tunnel_token);
+  try {
+    await wait(300);
+    for (let i = 0; i < 3; i++) {
+      const res = await voiceRequest('/v1/voice/google', token, googleIntent('action.devices.QUERY'));
+      assert.equal(res.status, 200);
+    }
+    assert.equal(second.received.length, 3);
+    assert.equal(first.received.length, 0);
+  } finally {
+    first.close();
+    second.close();
+  }
+});
+
 test('voice: a home without voice support gets 503 voice_unsupported', async () => {
   const { cookie, link } = shared;
   const home = await connectHome(link.tunnel_token, { caps: [] });
