@@ -28,6 +28,7 @@ import {
   PING_INTERVAL_S,
   PONG_TIMEOUT_S,
   PROTOCOL_VERSION,
+  RELAY_CAPS,
   RESPONSE_TIMEOUT_MS,
   requestHeaders,
   responseHeaders,
@@ -227,6 +228,7 @@ export class TunnelDO {
           instance,
           max_streams: MAX_STREAMS,
           max_ws_message_bytes: this.maxWsMessageBytes,
+          caps: RELAY_CAPS,
         };
         ws.send(JSON.stringify(ready));
         for (const wake of [...this.helloWaiters]) wake();
@@ -256,7 +258,11 @@ export class TunnelDO {
             this.haSocket()?.send(JSON.stringify({ t: 'reset', id: msg.id, reason: 'client cancelled' } satisfies RelayMessage));
           },
         });
-        stream.resolveHead(new Response(body, { status: msg.status, headers: responseHeaders(msg.headers) }));
+        const headers = responseHeaders(msg.headers);
+        // "manual" says these bytes are already compressed. On the default, the runtime would compress them again
+        // and the browser would decode once and show raw gzip.
+        const encodeBody = headers.has('content-encoding') ? 'manual' : 'automatic';
+        stream.resolveHead(new Response(body, { status: msg.status, headers, encodeBody }));
         return;
       }
       case 'end': {

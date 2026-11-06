@@ -10,6 +10,10 @@ export const RESPONSE_TIMEOUT_MS = 30_000;
 export const OP_TEXT = 0x01;
 export const OP_BINARY = 0x02;
 
+// Optional features of this relay, stated in "ready". Home Assistant uses one only when it's listed here.
+// content_encoding: a response may arrive already compressed, with its Content-Encoding header.
+export const RELAY_CAPS = ['content_encoding'];
+
 export const WS_CLOSE_TOO_BIG = 1009;
 // Cloudflare closes a WebSocket with 1009 when it receives a message over 32 MiB, and that can't be raised. One
 // proxied message crosses the tunnel as one binary frame, so a frame over this would drop the whole tunnel.
@@ -60,7 +64,7 @@ export type HaMessage =
 
 /** Text frames sent by the relay. */
 export type RelayMessage =
-  | { t: 'ready'; instance: string; max_streams: number; max_ws_message_bytes: number }
+  | { t: 'ready'; instance: string; max_streams: number; max_ws_message_bytes: number; caps: string[] }
   | { t: 'req'; id: number; method: string; path: string; query: string; headers: HeaderMap }
   | { t: 'ws_open'; id: number; path: string; query: string; headers: HeaderMap }
   | { t: 'end'; id: number }

@@ -119,6 +119,18 @@ function isPubliclyCacheable(response: Response): boolean {
 }
 
 /**
+ * The copy of a response to keep in the edge cache: decoded, whatever Home Assistant sent. A body that goes into the
+ * cache still compressed comes back compressed twice, which a browser shows as garbage. Cloudflare compresses a plain
+ * entry for each client on the way out.
+ */
+function plainCopy(response: Response): Response {
+  const copy = response.clone();
+  const headers = new Headers(copy.headers);
+  headers.delete('content-encoding');
+  return new Response(copy.body, { status: copy.status, headers });
+}
+
+/**
  * Public traffic to <subdomain>.<INSTANCE_DOMAIN>, forwarded to Home Assistant over its tunnel.
  *
  * GETs are checked against Cloudflare's edge cache first, so a dashboard load's static assets (frontend
@@ -140,7 +152,7 @@ export async function proxyToInstance(request: Request, env: Env, subdomain: str
   const response = await stub.fetch(forwarded);
 
   if (cacheable && isPubliclyCacheable(response)) {
-    ctx.waitUntil(caches.default.put(request, response.clone()));
+    ctx.waitUntil(caches.default.put(request, plainCopy(response)));
   }
   return response;
 }

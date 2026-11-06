@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import WebSocket from 'ws';
 
 const PORT = 8790;
@@ -494,5 +495,95 @@ test('a 204 or 304 from Home Assistant reaches the browser at once (regression: 
     assert.equal(res.body, '');
     assert.ok(Date.now() - started < 5000, `status ${status} answered promptly`);
   }
+  ha.close();
+});
+
+// --- compressed responses (PROTOCOL.md 2.4) ------------------------------------
+
+/** A response exactly as it arrives, undecoded. */
+function rawRequest({ sub, path, acceptEncoding }) {
+  return new Promise((resolve, reject) => {
+    const headers = { 'x-mdt-dev-host': `${sub}.${DOMAIN}`, 'accept-encoding': acceptEncoding };
+    const req = http.request({ host: '127.0.0.1', port: PORT, path, headers }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function decodeBody({ headers, body }) {
+  if (headers['content-encoding'] === 'gzip') return zlib.gunzipSync(body);
+  if (headers['content-encoding'] === 'br') return zlib.brotliDecompressSync(body);
+  return body;
+}
+
+test('ready states that the relay passes compressed bodies on', async () => {
+  const { ha, ready } = await linkedHa('caps');
+  assert.deepEqual(ready.caps, ['content_encoding']);
+  ha.close();
+});
+
+test('a body Home Assistant compressed reaches the client decodable (regression: it was double compressed, shown as garbage)', async () => {
+  const { sub, ha } = await linkedHa('gzip');
+  const text = 'function card() { return "hello"; }\n'.repeat(20000);
+  ha.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(data.toString());
+    if (msg.t !== 'req' || msg.path !== '/api/bundle.js') return;
+    respond(ha, msg.id, 200, { 'content-type': 'application/javascript', 'content-encoding': 'gzip' }, [zlib.gzipSync(text)]);
+  });
+
+  for (const acceptEncoding of ['gzip', 'gzip, br', 'br', 'identity']) {
+    const res = await rawRequest({ sub, path: '/api/bundle.js', acceptEncoding });
+    assert.equal(res.status, 200, acceptEncoding);
+    assert.equal(decodeBody(res).toString(), text, acceptEncoding);
+  }
+  ha.close();
+});
+
+test('a body Home Assistant did not compress is still compressed for the client', async () => {
+  const { sub, ha } = await linkedHa('plain');
+  const text = '{"state":"on"}\n'.repeat(5000);
+  ha.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(data.toString());
+    if (msg.t !== 'req' || msg.path !== '/api/states') return;
+    respond(ha, msg.id, 200, { 'content-type': 'application/json' }, [Buffer.from(text)]);
+  });
+
+  const res = await rawRequest({ sub, path: '/api/states', acceptEncoding: 'gzip' });
+  assert.equal(res.headers['content-encoding'], 'gzip');
+  assert.ok(res.body.length < text.length / 3);
+  assert.equal(decodeBody(res).toString(), text);
+  ha.close();
+});
+
+test('a compressed file stays decodable once it is in the edge cache (regression: the cached copy was compressed twice)', async () => {
+  const { sub, ha } = await linkedHa('cached');
+  const path = `/static/compressed-${Date.now()}.js`;
+  const text = 'function card() { return "cached"; }\n'.repeat(20000);
+  let requests = 0;
+  ha.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(data.toString());
+    if (msg.t !== 'req' || msg.path !== path) return;
+    requests += 1;
+    const headers = { 'content-type': 'application/javascript', 'content-encoding': 'gzip', 'cache-control': 'public, max-age=60' };
+    respond(ha, msg.id, 200, headers, [zlib.gzipSync(text)]);
+  });
+
+  const first = await rawRequest({ sub, path, acceptEncoding: 'gzip, br' });
+  assert.equal(decodeBody(first).toString(), text, 'first fetch');
+  await new Promise((r) => setTimeout(r, 300));
+
+  for (const acceptEncoding of ['gzip, br', 'gzip', 'br', 'identity']) {
+    const res = await rawRequest({ sub, path, acceptEncoding });
+    assert.equal(res.status, 200, acceptEncoding);
+    assert.equal(decodeBody(res).toString(), text, `cached copy, ${acceptEncoding}`);
+  }
+  assert.equal(requests, 1, 'the repeats came from the edge cache');
   ha.close();
 });
