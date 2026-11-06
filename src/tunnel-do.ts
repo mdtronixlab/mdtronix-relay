@@ -74,6 +74,7 @@ const ACCESS_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 // a couple of seconds. A voice request that lands in that gap waits this long for it, instead of telling
 // Google or Alexa that the home is offline.
 const RECONNECT_GRACE_MS = 4_000;
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
 
@@ -240,6 +241,11 @@ export class TunnelDO {
       case 'res': {
         const stream = this.streams.get(msg.id);
         if (!stream || stream.kind !== 'http') return;
+        // Building one of these with a body throws, which would leave the browser waiting for a 504.
+        if (NULL_BODY_STATUSES.has(msg.status)) {
+          stream.resolveHead(new Response(null, { status: msg.status, headers: responseHeaders(msg.headers) }));
+          return;
+        }
         const body = new ReadableStream<Uint8Array>({
           start: (controller) => {
             stream.controller = controller;

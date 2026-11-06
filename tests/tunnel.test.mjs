@@ -472,3 +472,27 @@ test('a browser message over the limit ends its own stream, and the tunnel stays
   assert.equal((await publicRequest({ sub, path: '/api/hello' })).status, 200);
   ha.close();
 });
+
+// --- responses without a body --------------------------------------------------
+
+test('a 204 or 304 from Home Assistant reaches the browser at once (regression: it threw and became a 504 after 30 s)', async () => {
+  const { sub, ha } = await linkedHa('nobody');
+  ha.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(data.toString());
+    if (msg.t !== 'req' || !msg.path.startsWith('/api/status/')) return;
+    const status = Number(msg.path.slice('/api/status/'.length));
+    ha.send(JSON.stringify({ t: 'res', id: msg.id, status, headers: { etag: '"abc"' } }));
+    ha.send(JSON.stringify({ t: 'end', id: msg.id }));
+  });
+
+  for (const status of [204, 304]) {
+    const started = Date.now();
+    const res = await publicRequest({ sub, path: `/api/status/${status}` });
+    assert.equal(res.status, status);
+    assert.equal(res.headers.etag, '"abc"');
+    assert.equal(res.body, '');
+    assert.ok(Date.now() - started < 5000, `status ${status} answered promptly`);
+  }
+  ha.close();
+});
