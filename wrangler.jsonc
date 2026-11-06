@@ -19,6 +19,9 @@
     "PUBLIC_ORIGIN": "https://relay.mdtronix.online",
     "TUNNEL_PUBLIC_HOST": "relay.mdtronix.online",
     "INSTANCE_DOMAIN": "mdtronix.online",
+    // Largest proxied WebSocket message, in bytes, either way (24 MiB). The relay tells Home Assistant this value, so
+    // changing it here needs no integration update. Capped at 32 MiB less 5 bytes; src/frames.ts explains why.
+    "MAX_WS_MESSAGE_BYTES": "25165824",
     // The Alexa account-linking client ID is public. It must match the value entered in the Alexa skill.
     "ALEXA_CLIENT_ID": "mdtronix-alexa",
     // The skill's "Send Alexa Events" LWA client ID (Build > Permissions). Used with ALEXA_LWA_CLIENT_SECRET

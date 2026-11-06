@@ -7,6 +7,8 @@ export interface Env {
   TUNNEL_PUBLIC_HOST: string;
   /** Parent domain for customer remote URLs, e.g. mdtronix.online. */
   INSTANCE_DOMAIN: string;
+  /** Largest proxied WebSocket message, in bytes, either way. Unset uses DEFAULT_WS_MESSAGE_BYTES; see src/frames.ts. */
+  MAX_WS_MESSAGE_BYTES?: string;
   /** Local development only. Must never be set in production, because it enables a login with no password. */
   DEV_LOGIN?: string;
   /** Secret: bearer token for the operator API (/v1/admin/subscription). Set with `wrangler secret put ADMIN_TOKEN`. */

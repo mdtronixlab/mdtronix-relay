@@ -15,6 +15,7 @@ import { accessStateFor, type AccessState } from './billing';
 import type { Env } from './env';
 import { json } from './http';
 import {
+  CF_MAX_WS_MESSAGE_BYTES,
   decodeData,
   encodeData,
   encodeWsMessage,
@@ -32,6 +33,9 @@ import {
   responseHeaders,
   VOICE_PLATFORMS,
   VOICE_TIMEOUT_MS,
+  wireCloseCode,
+  WS_CLOSE_TOO_BIG,
+  wsMessageLimit,
   type HaMessage,
   type HeaderMap,
   type RelayMessage,
@@ -80,11 +84,14 @@ export class TunnelDO {
   private helloWaiters = new Set<() => void>();
   private accessCache: { at: number; state: AccessState } | undefined;
   private nextId = 1;
+  private maxWsMessageBytes: number;
 
   constructor(
     private state: DurableObjectState,
     private env: Env,
-  ) {}
+  ) {
+    this.maxWsMessageBytes = wsMessageLimit(env.MAX_WS_MESSAGE_BYTES);
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -183,7 +190,12 @@ export class TunnelDO {
     this.onData(message);
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket, code?: number, reason?: string): Promise<void> {
+    if (code === WS_CLOSE_TOO_BIG) {
+      // Cloudflare refused a frame from Home Assistant, which took every stream down. It doesn't report the size.
+      const instance = (await this.state.storage.get<string>('instance')) ?? '';
+      logTooBig({ hop: 'tunnel client to relay', instance, limit: CF_MAX_WS_MESSAGE_BYTES, reason });
+    }
     // A replaced socket finishing its close doesn't concern the requests already riding on its successor.
     const live = this.haSocket();
     if (live && live !== ws) return;
@@ -209,7 +221,12 @@ export class TunnelDO {
         // Older clients don't send caps, so they simply get no voice requests.
         await this.state.storage.put('voice', Array.isArray(msg.caps) && msg.caps.includes('voice'));
         const instance = (await this.state.storage.get<string>('instance')) ?? '';
-        const ready: RelayMessage = { t: 'ready', instance, max_streams: MAX_STREAMS };
+        const ready: RelayMessage = {
+          t: 'ready',
+          instance,
+          max_streams: MAX_STREAMS,
+          max_ws_message_bytes: this.maxWsMessageBytes,
+        };
         ws.send(JSON.stringify(ready));
         for (const wake of [...this.helloWaiters]) wake();
         return;
@@ -252,7 +269,7 @@ export class TunnelDO {
       case 'ws_close': {
         const stream = this.streams.get(msg.id);
         if (stream?.kind === 'ws') {
-          stream.browser.close(msg.code ?? 1000, msg.reason ?? '');
+          stream.browser.close(wireCloseCode(msg.code), msg.reason ?? '');
           this.streams.delete(msg.id);
         }
         return;
@@ -344,7 +361,7 @@ export class TunnelDO {
     const headers = requestHeaders(request.headers, forwardedFor, forwardedHost);
 
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-      return this.proxyWebSocket(ha, id, path, query, headers);
+      return this.proxyWebSocket(ha, id, path, query, headers, request.headers.get('x-mdt-instance') ?? '');
     }
     return this.proxyHttp(ha, id, request, path, query, headers);
   }
@@ -408,6 +425,7 @@ export class TunnelDO {
     path: string,
     query: string,
     headers: HeaderMap,
+    instance: string,
   ): Promise<Response> {
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -431,6 +449,13 @@ export class TunnelDO {
     this.streams.set(id, stream);
 
     const forward = (text: boolean, data: Uint8Array) => {
+      // Browser sockets aren't authenticated here, Home Assistant's own login runs inside the stream. Only this one
+      // stream ends, so a visitor can't use a large message to take the home's tunnel down.
+      if (data.byteLength > this.maxWsMessageBytes) {
+        logTooBig({ hop: 'browser to relay', instance, stream: id, bytes: data.byteLength, limit: this.maxWsMessageBytes });
+        server.close(WS_CLOSE_TOO_BIG, 'message too big');
+        return;
+      }
       const live = this.haSocket();
       if (live) live.send(encodeWsMessage(id, text, data));
     };
@@ -444,6 +469,9 @@ export class TunnelDO {
       else forward(false, new Uint8Array(event.data as ArrayBuffer));
     });
     server.addEventListener('close', (event) => {
+      if (event.code === WS_CLOSE_TOO_BIG) {
+        logTooBig({ hop: 'browser to relay', instance, stream: id, limit: CF_MAX_WS_MESSAGE_BYTES, reason: event.reason });
+      }
       this.haSocket()?.send(
         JSON.stringify({ t: 'ws_close', id, code: event.code, reason: event.reason } satisfies RelayMessage),
       );
@@ -538,6 +566,18 @@ async function readVoiceRequest(request: Request): Promise<{ platform: VoicePlat
   if (!platform || typeof parsed.body !== 'string') return null;
   if (TEXT_ENCODER.encode(parsed.body).byteLength > MAX_VOICE_REQUEST_BYTES) return null;
   return { platform, body: parsed.body };
+}
+
+/** One line for `wrangler tail` to find. `bytes` is absent when Cloudflare refused the message itself and didn't say. */
+function logTooBig(details: {
+  hop: string;
+  instance: string;
+  stream?: number;
+  bytes?: number;
+  limit: number;
+  reason?: string;
+}): void {
+  console.warn(JSON.stringify({ event: 'ws_message_too_big', code: WS_CLOSE_TOO_BIG, ...details }));
 }
 
 function homeOfflineReply(): VoiceReply {

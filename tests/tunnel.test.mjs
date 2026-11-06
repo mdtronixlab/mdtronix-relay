@@ -364,3 +364,111 @@ test("edge cache: a public-cacheable response is served after HA goes offline, a
   assert.equal(second.status, 200);
   assert.equal(second.body, 'console.log("cached")');
 });
+
+// --- WebSocket size limits and close handling (PROTOCOL.md 2.2) --------------
+
+const MiB = 1024 * 1024;
+
+function openBrowser(sub) {
+  const browser = new WebSocket(`ws://127.0.0.1:${PORT}/api/websocket`, { headers: { 'x-mdt-dev-host': `${sub}.${DOMAIN}` } });
+  return once(browser, 'open').then(() => browser);
+}
+
+function closeOf(browser) {
+  return new Promise((resolve) => browser.once('close', (code, reason) => resolve({ code, reason: reason.toString() })));
+}
+
+function controlFrame(ha, wanted) {
+  return new Promise((resolve) => {
+    const onMessage = (data, isBinary) => {
+      if (isBinary) return;
+      const msg = JSON.parse(data.toString());
+      if (msg.t !== wanted) return;
+      ha.off('message', onMessage);
+      resolve(msg);
+    };
+    ha.on('message', onMessage);
+  });
+}
+
+async function linkedHa(prefix) {
+  const link = await linkHome(`${prefix}-${Date.now()}@example.test`);
+  const ha = await connectHa(link.tunnel_token);
+  const ready = controlFrame(ha, 'ready');
+  fakeHa(ha);
+  return { sub: link.subdomain, ha, ready: await ready };
+}
+
+test('ready tells Home Assistant the WebSocket message limit', async () => {
+  const { ha, ready } = await linkedHa('limit');
+  assert.equal(ready.max_ws_message_bytes, 24 * MiB);
+  ha.close();
+});
+
+test('a WebSocket message at the limit reaches the browser whole, non-Latin-1 text included', async () => {
+  const { sub, ha } = await linkedHa('large');
+  const opened = controlFrame(ha, 'ws_open');
+  const browser = await openBrowser(sub);
+  const { id } = await opened;
+
+  const unit = 'repo \u2728 ';
+  const text = unit.repeat(Math.floor((24 * MiB) / Buffer.byteLength(unit)));
+  const received = once(browser, 'message');
+  ha.send(frame(id, Buffer.concat([Buffer.from([OP_TEXT]), Buffer.from(text)])));
+  assert.equal((await received).toString() === text, true);
+
+  browser.close();
+  ha.close();
+});
+
+test('close code and reason from Home Assistant reach the browser', async () => {
+  const { sub, ha } = await linkedHa('close');
+  const opened = controlFrame(ha, 'ws_open');
+  const browser = await openBrowser(sub);
+  const { id } = await opened;
+
+  const closed = closeOf(browser);
+  ha.send(JSON.stringify({ t: 'ws_close', id, code: 1009, reason: 'tunnel: Message size 5 exceeds limit 4' }));
+  assert.deepEqual(await closed, { code: 1009, reason: 'tunnel: Message size 5 exceeds limit 4' });
+  ha.close();
+});
+
+test('a close code that cannot be sent still closes the browser (regression: 1006 threw and left it hanging)', async () => {
+  const { sub, ha } = await linkedHa('abnormal');
+  for (const [sent, seen] of [[1006, 1011], [1005, 1000], [1015, 1011]]) {
+    const opened = controlFrame(ha, 'ws_open');
+    const browser = await openBrowser(sub);
+    const { id } = await opened;
+    const closed = closeOf(browser);
+    ha.send(JSON.stringify({ t: 'ws_close', id, code: sent, reason: '' }));
+    assert.equal((await closed).code, seen, `code ${sent}`);
+  }
+  ha.close();
+});
+
+test('a browser message over the limit ends its own stream, and the tunnel stays up', async () => {
+  const { sub, ha } = await linkedHa('toobig');
+  const opened = controlFrame(ha, 'ws_open');
+  const browser = await openBrowser(sub);
+  const { id } = await opened;
+
+  let forwarded = 0;
+  ha.on('message', (data, isBinary) => {
+    if (isBinary && Buffer.from(data).readUInt32BE(0) === id) forwarded += 1;
+  });
+
+  const closed = closeOf(browser);
+  const haToldOfClose = controlFrame(ha, 'ws_close');
+  const oversized = Buffer.alloc(24 * MiB + 1, 'x').toString();
+  browser.send(oversized);
+  browser.send(oversized);
+
+  assert.deepEqual(await closed, { code: 1009, reason: 'message too big' });
+  const told = await haToldOfClose;
+  assert.equal(told.id, id);
+  assert.equal(told.code, 1009);
+  assert.equal(forwarded, 0, 'nothing oversized reached Home Assistant');
+  assert.equal(ha.readyState, WebSocket.OPEN);
+  assert.equal((await publicRequest({ sub, path: '/api/hello' })).status, 200);
+  ha.close();
+});

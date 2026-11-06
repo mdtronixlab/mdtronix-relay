@@ -10,6 +10,32 @@ export const RESPONSE_TIMEOUT_MS = 30_000;
 export const OP_TEXT = 0x01;
 export const OP_BINARY = 0x02;
 
+export const WS_CLOSE_TOO_BIG = 1009;
+// Cloudflare closes a WebSocket with 1009 when it receives a message over 32 MiB, and that can't be raised. One
+// proxied message crosses the tunnel as one binary frame, so a frame over this would drop the whole tunnel.
+export const CF_MAX_WS_MESSAGE_BYTES = 32 * 1024 * 1024;
+// The 4-byte stream id and the opcode byte in front of a proxied message.
+const WS_FRAME_OVERHEAD_BYTES = 5;
+export const MAX_WS_MESSAGE_CEILING_BYTES = CF_MAX_WS_MESSAGE_BYTES - WS_FRAME_OVERHEAD_BYTES;
+// Passing a message on holds it as bytes, as a decoded string (two bytes a character for JSON with any non-Latin-1
+// text) and as bytes again for the send: about four times its size, in an isolate limited to 128 MB. Going over that
+// resets the object and drops the tunnel, so this default stays below the ceiling. MAX_WS_MESSAGE_BYTES overrides it.
+export const DEFAULT_WS_MESSAGE_BYTES = 24 * 1024 * 1024;
+
+/** The cap on one proxied WebSocket message, from the MAX_WS_MESSAGE_BYTES variable. */
+export function wsMessageLimit(configured: string | undefined): number {
+  const value = Number(configured);
+  if (!Number.isInteger(value) || value <= 0) return DEFAULT_WS_MESSAGE_BYTES;
+  return Math.min(value, MAX_WS_MESSAGE_CEILING_BYTES);
+}
+
+/** A close code a WebSocket can send. 1005, 1006 and 1015 describe a close with no frame, and close() throws on them. */
+export function wireCloseCode(code: number | undefined): number {
+  if (code === undefined || code === 1005) return 1000;
+  const reserved = code === 1004 || code === 1006 || code === 1015;
+  return reserved || code < 1000 || code > 4999 ? 1011 : code;
+}
+
 // Voice fulfillment (PROTOCOL.md section 2.5). Requests are small JSON documents, and Google and
 // Alexa expect an answer within a few seconds.
 export const VOICE_TIMEOUT_MS = 8_000;
@@ -34,7 +60,7 @@ export type HaMessage =
 
 /** Text frames sent by the relay. */
 export type RelayMessage =
-  | { t: 'ready'; instance: string; max_streams: number }
+  | { t: 'ready'; instance: string; max_streams: number; max_ws_message_bytes: number }
   | { t: 'req'; id: number; method: string; path: string; query: string; headers: HeaderMap }
   | { t: 'ws_open'; id: number; path: string; query: string; headers: HeaderMap }
   | { t: 'end'; id: number }
