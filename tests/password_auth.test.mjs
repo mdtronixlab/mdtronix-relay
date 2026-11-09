@@ -261,3 +261,57 @@ test('GET /login and /register render forms', async () => {
   assert.equal(registerPage.status, 200);
   assert.match(await registerPage.text(), /name="password_confirm"/);
 });
+
+// --- Where sign-in may send a customer afterwards (safeNext in src/http.ts) -------------------------------
+
+async function afterDevLogin(next) {
+  const email = `next-${Date.now()}@example.test`;
+  const res = await fetch(`${BASE}/v1/dev/login?${new URLSearchParams({ email, next })}`, { redirect: 'manual' });
+  assert.equal(res.status, 302, JSON.stringify(next));
+  return res.headers.get('location');
+}
+
+test('sign-in falls back to /account for a next that would leave the site', async () => {
+  // Browsers read "\" as "/" and drop tabs and newlines, so every path-shaped one of these is a real redirect
+  // off the site. The dev route shares safeNext and redirect with /login, without /login's rate limit.
+  const attacks = [
+    '//evil.example',
+    '/\\evil.example',
+    '/\\/evil.example',
+    '\\\\evil.example',
+    '/\t/evil.example',
+    '/\n/evil.example',
+    '/\r/evil.example',
+    'https://evil.example',
+    'javascript:alert(1)',
+    '/\\[',
+    '/acc\nount',
+  ];
+  for (const next of attacks) assert.equal(await afterDevLogin(next), '/account', JSON.stringify(next));
+});
+
+test('the password sign-in route refuses a next that would leave the site', async () => {
+  const email = `next-login-${Date.now()}@example.test`;
+  assert.equal((await approve(email)).status, 200);
+  assert.equal((await register({ email, password: 'correct horse', password_confirm: 'correct horse' })).status, 302);
+
+  const res = await login({ email, password: 'correct horse', next: '/\\evil.example' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), '/account');
+});
+
+test('sign-in keeps a same-site next exactly as it was given', async () => {
+  const kept = [
+    '/account',
+    '/account#devices',
+    '/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fa.example%2Fb&state=a%2Fb',
+    // Normalizing this would turn it into "//evil.example", so it must go out untouched. As written, a browser
+    // resolves it to a path on this site.
+    '/.//evil.example',
+  ];
+  for (const next of kept) {
+    const location = await afterDevLogin(next);
+    assert.equal(location, next);
+    assert.equal(new URL(location, ORIGIN).origin, ORIGIN, next);
+  }
+});

@@ -54,10 +54,20 @@ export function esc(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** Only same-site relative paths are allowed as a post-login destination. */
+/**
+ * Only same-site paths are allowed as a post-login destination. A prefix check isn't enough: browsers read "\"
+ * as "/" and drop tabs and newlines, so "/\evil.example" leaves the site. This resolves the value the way a
+ * browser will, then returns it as given. Returning the normalized URL instead would be a hole of its own:
+ * "/.//evil.example" stays on this site as written, but normalizes to "//evil.example".
+ */
 export function safeNext(next: string | null): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/account';
-  return next;
+  if (!next || !next.startsWith('/') || /[\x00-\x1f\x7f]/.test(next)) return '/account';
+  const base = 'https://relay.invalid';
+  try {
+    return new URL(next, base).origin === base ? next : '/account';
+  } catch {
+    return '/account';
+  }
 }
 
 /** A form field's value as a string — '' if it's absent, never coerced from a File (form.get returns one

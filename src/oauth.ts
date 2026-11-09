@@ -4,6 +4,7 @@
 // Access tokens and refresh tokens are stored as hashes only.
 
 import { base64UrlToBytes, constantTimeEqual, nowSeconds, randomId, randomToken, sha256Base64Url, sha256Hex } from './crypto';
+import { GOOGLE_CONSENT_STATEMENT, LINK_CSS, linkBrand } from './brand';
 import type { Env } from './env';
 import { esc, html, json, jsonError, redirect } from './http';
 import { PLATFORMS, platformForClientId, secretForPlatform, type Platform } from './oauth-clients';
@@ -72,7 +73,7 @@ button { font-size: 1rem; padding: .6rem 1.2rem; margin: .5rem .5rem 0 0; }
 .fine { color: #666; font-size: .85rem; }
 form.inline { display: inline; margin: 0; }
 button.link { background: none; border: none; color: #1a5fb4; padding: 0; font-size: inherit; text-decoration: underline; cursor: pointer; }
-</style></head><body>${body}</body></html>`;
+${LINK_CSS}</style></head><body>${body}</body></html>`;
 }
 
 function redirectWithParams(base: string, params: Record<string, string>): Response {
@@ -95,12 +96,23 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
   const v = parsed.value;
   const platformName = PLATFORMS[v.platform].name;
   const authorizePath = url.pathname + url.search;
+  const google = v.platform === 'google';
+  // Google requires the account to be shown as linked to Google, never to Google Home: see brand.ts.
+  const intro = google
+    ? `${linkBrand()}<h1>Link your account to Google</h1>
+<p>Google will be able to see and control the devices you choose to share from your Home Assistant.</p>
+<p class="statement">${GOOGLE_CONSENT_STATEMENT}</p>`
+    : `<h1>Link ${esc(platformName)}</h1>
+<p>${esc(platformName)} will be able to control the devices in your Home Assistant through MDtronix.</p>`;
+  const footer = google
+    ? `<p class="fine">You can unlink at any time from <a href="/account" target="_blank" rel="noopener">your MDtronix account</a>.<br>
+<a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a> · <a href="/privacy" target="_blank" rel="noopener">MDtronix Privacy Policy</a></p>`
+    : '';
   return html(
     200,
     page(
-      `Link ${platformName}`,
-      `<h1>Link ${esc(platformName)}</h1>
-<p>${esc(platformName)} will be able to control the devices in your Home Assistant through MDtronix.</p>
+      google ? 'Link your account to Google' : `Link ${platformName}`,
+      `${intro}
 <p class="fine">Signed in as ${esc(customer.email)}.
 <form method="post" action="/oauth/switch-account" class="inline">
   <input type="hidden" name="next" value="${esc(authorizePath)}">
@@ -113,9 +125,10 @@ export async function authorizeGet(request: Request, env: Env): Promise<Response
   <input type="hidden" name="code_challenge" value="${esc(v.codeChallenge ?? '')}">
   <input type="hidden" name="code_challenge_method" value="${v.codeChallenge ? 'S256' : ''}">
   <input type="hidden" name="response_type" value="code">
-  <button type="submit" name="decision" value="allow">Allow</button>
-  <button type="submit" name="decision" value="deny">Deny</button>
-</form>`,
+  <button type="submit" name="decision" value="allow"${google ? ' class="primary"' : ''}>${google ? 'Agree and link' : 'Allow'}</button>
+  <button type="submit" name="decision" value="deny">${google ? 'Cancel' : 'Deny'}</button>
+</form>
+${footer}`,
     ),
   );
 }

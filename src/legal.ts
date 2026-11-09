@@ -1,7 +1,7 @@
 // Privacy policy and terms of use. Plain static content, not generated from the database, so these
 // routes are cheap and don't need a customer lookup.
 //
-// NOTE for the owner: this describes what the code actually does as of 2026-10, for the Alexa skill
+// NOTE for the owner: this describes what the code actually does as of 2026-11, for the Alexa skill
 // certification's required Privacy Policy / Terms of Use URLs. It is not legal advice — have it
 // reviewed before relying on it for certification or for customers.
 
@@ -10,7 +10,7 @@ import { html } from './http';
 import { shell } from './site';
 import { signedInCustomer } from './web';
 
-const LAST_UPDATED = '2026-10-12';
+const LAST_UPDATED = '2026-11-07';
 
 const PRIVACY_BODY = `
 <h1>Privacy Policy</h1>
@@ -21,7 +21,7 @@ const PRIVACY_BODY = `
 
 <h2>What we collect</h2>
 <ul>
-<li><strong>Account:</strong> the email address and account identifier from your Google sign-in.</li>
+<li><strong>Account:</strong> your email address, a salted hash of your password (never the password itself), and when you last signed in. MDtronix staff use your email address to approve your account and, if you ask, to create a password reset link.</li>
 <li><strong>Home Assistant connection:</strong> a tunnel token and your instance's subdomain, used to route traffic to your Home Assistant. We don't see your Home Assistant's own login credentials.</li>
 <li><strong>Voice assistant links:</strong> if you link Google Home or Alexa, we store the OAuth tokens needed to authenticate their requests and, for Alexa's proactive state updates, a token Amazon issues us for your account. We store these as hashes where we only need to verify them again, and in full where we need to present them back to Google or Amazon ourselves.</li>
 <li><strong>Device exposure and PIN:</strong> which entities you've chosen to expose to each voice assistant, and the PIN you set for locks and alarms, are stored in your own Home Assistant, not on MDtronix Cloud's servers.</li>
@@ -31,7 +31,7 @@ const PRIVACY_BODY = `
 <h2>What we don't do</h2>
 <ul>
 <li>We don't sell your data.</li>
-<li>We don't read or store the contents of requests proxied through the tunnel (web traffic to your Home Assistant, or voice directives) beyond what's needed to deliver them and keep the connection working.</li>
+<li>We don't read or store the contents of requests proxied through the tunnel (web traffic to your Home Assistant, or voice directives) beyond what's needed to deliver them and keep the connection working. The one exception is files your Home Assistant itself marks as public, such as its app code, icons, and fonts, which are cached on Cloudflare's network so pages load faster. Dashboard pages and API responses, which carry your device data, are not cached.</li>
 <li>Nothing is exposed to Google Home or Alexa until you explicitly choose it in your Home Assistant's MDtronix Cloud integration settings.</li>
 </ul>
 
@@ -55,7 +55,7 @@ const TERMS_BODY = `
 <h2>Your responsibilities</h2>
 <ul>
 <li>You're responsible for what you expose to Google Home and Alexa, and for setting a PIN if you expose locks or alarm panels.</li>
-<li>You're responsible for keeping your Google account, and any account you use to sign in, secure.</li>
+<li>You're responsible for keeping your MDtronix Cloud password, and any account you link to it, secure.</li>
 <li>Don't use the service to access or control a Home Assistant instance you don't own or have permission to use.</li>
 </ul>
 

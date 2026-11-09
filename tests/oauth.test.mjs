@@ -307,3 +307,91 @@ test('voice linking: deny returns access_denied and issues no code', async () =>
   assert.equal(location.searchParams.get('error'), 'access_denied');
   assert.equal(location.searchParams.get('code'), null);
 });
+
+// --- What Google's certification requires on the linking pages (src/brand.ts) ---------------------------
+
+const SIGN_IN_STATEMENT = 'By signing in, you are authorizing Google to control your devices.';
+const CONSENT_STATEMENT = 'By selecting Agree and link, you are authorizing Google to control your devices.';
+const AUTHORIZING_GOOGLE = /authorizing Google/;
+const GOOGLE_PRODUCT = /Google (Home|Assistant)/;
+
+const googleAuthorizePath = () => `/oauth/authorize?${authorizeParams(pkce().challenge)}`;
+const alexaAuthorizePath = () =>
+  `/oauth/authorize?${new URLSearchParams({
+    client_id: 'mdtronix-alexa',
+    redirect_uri: 'https://pitangui.amazon.com/api/skill/link/M23Q7Y64C1HJD4',
+    response_type: 'code',
+    state: 'state-123',
+    code_challenge: pkce().challenge,
+    code_challenge_method: 'S256',
+  })}`;
+
+function assertIdentifiesIntegration(text) {
+  assert.match(text, /<strong>MDtronix Home<\/strong>/);
+  assert.match(text, /by MDtronix Lab/);
+  assert.match(text, /<img src="data:image\/png;base64,/);
+}
+
+test('the Google sign-in page identifies the integration, links to Google, and states the authorization', async () => {
+  const res = await fetch(`${BASE}/login?next=${encodeURIComponent(googleAuthorizePath())}`);
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assertIdentifiesIntegration(text);
+  assert.ok(text.includes(SIGN_IN_STATEMENT));
+  assert.match(text, /Sign in to link your account to Google/);
+  assert.doesNotMatch(text, GOOGLE_PRODUCT);
+  assert.match(text, /<form method="post" action="\/login">/);
+  assert.match(text, /name="next" value="\/oauth\/authorize\?/);
+});
+
+test('a failed Google sign-in keeps the required wording on the page it shows again', async () => {
+  const res = await fetch(`${BASE}/login`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ next: googleAuthorizePath(), email: `nobody-${Date.now()}@example.test`, password: 'whatever1' }),
+    redirect: 'manual',
+  });
+  assert.equal(res.status, 400);
+  const text = await res.text();
+  assertIdentifiesIntegration(text);
+  assert.ok(text.includes(SIGN_IN_STATEMENT));
+  assert.match(text, /name="next" value="\/oauth\/authorize\?/);
+});
+
+test('creating an account during Google linking shows who it is for but authorizes nothing yet', async () => {
+  const text = await (await fetch(`${BASE}/register?next=${encodeURIComponent(googleAuthorizePath())}`)).text();
+  assertIdentifiesIntegration(text);
+  assert.doesNotMatch(text, AUTHORIZING_GOOGLE);
+  assert.doesNotMatch(text, GOOGLE_PRODUCT);
+});
+
+test('website and Alexa sign-in never claim to authorize Google', async () => {
+  for (const next of ['/account', alexaAuthorizePath(), '/oauth/authorize?client_id=unknown-client']) {
+    const text = await (await fetch(`${BASE}/login?next=${encodeURIComponent(next)}`)).text();
+    assert.doesNotMatch(text, AUTHORIZING_GOOGLE, next);
+    assert.doesNotMatch(text, /MDtronix Home/, next);
+    assert.match(text, /<h1>Sign in<\/h1>/, next);
+  }
+});
+
+test('the Google consent page links to Google, not to a Google product', async () => {
+  const cookie = await signedInCookie();
+  const text = await (await fetch(`${BASE}${googleAuthorizePath()}`, { headers: { cookie } })).text();
+  assertIdentifiesIntegration(text);
+  assert.match(text, /<title>Link your account to Google<\/title>/);
+  assert.ok(text.includes(CONSENT_STATEMENT));
+  assert.doesNotMatch(text, GOOGLE_PRODUCT);
+  assert.match(text, /name="decision" value="allow" class="primary">Agree and link</);
+  assert.match(text, /name="decision" value="deny">Cancel</);
+  assert.match(text, /policies\.google\.com\/privacy/);
+});
+
+test('the Alexa consent page is unchanged by the Google requirements', async () => {
+  const cookie = await signedInCookie();
+  const text = await (await fetch(`${BASE}${alexaAuthorizePath()}`, { headers: { cookie } })).text();
+  assert.match(text, /<h1>Link Alexa<\/h1>/);
+  assert.match(text, /name="decision" value="allow">Allow</);
+  assert.match(text, /name="decision" value="deny">Deny</);
+  assert.doesNotMatch(text, AUTHORIZING_GOOGLE);
+  assert.doesNotMatch(text, /MDtronix Home/);
+});

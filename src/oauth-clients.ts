@@ -44,6 +44,13 @@ export function platformForClientId(env: Env, clientId: string): Platform | null
   return null;
 }
 
+/** True when a post-login destination, already checked by safeNext, is Google's account linking. It only
+ * chooses what the sign-in pages say: /oauth/authorize still validates the request itself. */
+export function isGoogleLink(env: Env, path: string): boolean {
+  const url = new URL(path, 'https://relay.invalid');
+  return url.pathname === '/oauth/authorize' && platformForClientId(env, url.searchParams.get('client_id') ?? '') === 'google';
+}
+
 /** The secret the platform must present at the token endpoint, or null when it isn't configured. */
 export function secretForPlatform(env: Env, platform: Platform): string | null {
   const secret = platform === 'google' ? env.GOOGLE_VOICE_CLIENT_SECRET : env.ALEXA_CLIENT_SECRET;

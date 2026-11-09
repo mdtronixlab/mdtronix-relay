@@ -8,6 +8,8 @@ import { hashPassword, verifyPassword } from './password';
 import type { Env } from './env';
 import { esc, formString, html, redirect, safeNext } from './http';
 import { isApprovedEmail } from './approval';
+import { GOOGLE_SIGN_IN_STATEMENT, INTEGRATION_NAME, LINK_CSS, linkBrand } from './brand';
+import { isGoogleLink } from './oauth-clients';
 import { createSession, revokeAllSessions, sessionCookie } from './web';
 import { checkLimit, clientKey } from './ratelimit';
 
@@ -35,12 +37,14 @@ label { display: block; margin-top: 1rem; font-size: .9rem; color: #333; }
 button { font-size: 1rem; padding: .6rem 1.2rem; margin-top: 1.25rem; }
 .err { color: #b00020; }
 .fine { color: #666; font-size: .85rem; margin-top: 1rem; }
-</style></head><body>${body}</body></html>`;
+${LINK_CSS}</style></head><body>${body}</body></html>`;
 }
 
-function authForm(kind: 'login' | 'register', next: string, error: string | null, email: string): string {
+function authForm(kind: 'login' | 'register', next: string, error: string | null, email: string, googleLink: boolean): string {
   const action = kind === 'login' ? '/login' : '/register';
-  const title = kind === 'login' ? 'Sign in' : 'Create your account';
+  // Only signing in authorizes anything: a new account still has the consent page to get through.
+  const signingInForGoogle = googleLink && kind === 'login';
+  const title = signingInForGoogle ? 'Sign in to link your account to Google' : kind === 'login' ? 'Sign in' : 'Create your account';
   const confirmField =
     kind === 'register'
       ? `<label>Confirm password<input type="password" name="password_confirm" autocomplete="new-password" required></label>`
@@ -49,16 +53,23 @@ function authForm(kind: 'login' | 'register', next: string, error: string | null
     kind === 'login'
       ? `<p class="fine">No account yet? <a href="/register?next=${encodeURIComponent(next)}">Create one</a>.</p>`
       : `<p class="fine">Already have an account? <a href="/login?next=${encodeURIComponent(next)}">Sign in</a>.</p>`;
-  return `<h1>${esc(title)}</h1>
+  return `${googleLink ? linkBrand() : ''}<h1>${esc(title)}</h1>
 ${error ? `<p class="err">${esc(error)}</p>` : ''}
 <form method="post" action="${action}">
   <input type="hidden" name="next" value="${esc(next)}">
   <label>Email<input type="email" name="email" value="${esc(email)}" autocomplete="username" required></label>
   <label>Password<input type="password" name="password" autocomplete="${kind === 'login' ? 'current-password' : 'new-password'}" required></label>
   ${confirmField}
-  <button type="submit">${kind === 'login' ? 'Sign in' : 'Create account'}</button>
+  ${signingInForGoogle ? `<p class="statement">${GOOGLE_SIGN_IN_STATEMENT}</p>` : ''}
+  <button type="submit"${googleLink ? ' class="primary"' : ''}>${kind === 'login' ? 'Sign in' : 'Create account'}</button>
 </form>
 ${swap}`;
+}
+
+function authPage(env: Env, kind: 'login' | 'register', next: string, error: string | null, email: string): string {
+  const googleLink = isGoogleLink(env, next);
+  const brand = googleLink ? INTEGRATION_NAME : 'MDtronix Cloud';
+  return page(`${kind === 'login' ? 'Sign in' : 'Create account'} · ${brand}`, authForm(kind, next, error, email, googleLink));
 }
 
 function readNext(request: Request, form: FormData): string {
@@ -68,12 +79,12 @@ function readNext(request: Request, form: FormData): string {
 
 export async function loginPage(request: Request, env: Env): Promise<Response> {
   const next = safeNext(new URL(request.url).searchParams.get('next'));
-  return html(200, page('Sign in · MDtronix Cloud', authForm('login', next, null, '')));
+  return html(200, authPage(env, 'login', next, null, ''));
 }
 
 export async function registerPage(request: Request, env: Env): Promise<Response> {
   const next = safeNext(new URL(request.url).searchParams.get('next'));
-  return html(200, page('Create account · MDtronix Cloud', authForm('register', next, null, '')));
+  return html(200, authPage(env, 'register', next, null, ''));
 }
 
 // A function, not a module-scope constant: Workers forbids constructing a Response outside a handler.
@@ -194,7 +205,7 @@ export async function registerCustomer(request: Request, env: Env): Promise<Resp
   const password = formString(form, 'password');
   const confirm = formString(form, 'password_confirm');
 
-  const reRender = (message: string) => html(400, page('Create account · MDtronix Cloud', authForm('register', next, message, email)));
+  const reRender = (message: string) => html(400, authPage(env, 'register', next, message, email));
 
   if (!EMAIL_RE.test(email)) return reRender('Enter a valid email address.');
   if (password.length < MIN_PASSWORD_LENGTH) return reRender(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
@@ -281,7 +292,7 @@ export async function loginCustomer(request: Request, env: Env): Promise<Respons
   const email = normalizeEmail(formString(form, 'email'));
   const password = formString(form, 'password');
 
-  const reRender = (message: string) => html(400, page('Sign in · MDtronix Cloud', authForm('login', next, message, email)));
+  const reRender = (message: string) => html(400, authPage(env, 'login', next, message, email));
 
   const auth = await authenticateCustomer(env.CUSTOMERS, email, password);
   if (!auth.ok) {
